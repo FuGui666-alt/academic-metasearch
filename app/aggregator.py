@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator
@@ -27,6 +28,23 @@ from .cache import SEARCH_CACHE, TTLCache
 from .connectors import REGISTRY, build_clients
 from .merger import _combine, _should_fuzzy_merge, rank_results, merge
 from .models import MergedRecord, PaperRecord
+
+# 中文查询下默认跳过的数据源：
+#   - Europe PMC 按英文词干拆分匹配，中文查询会返回完全无关的条目
+#     （验收实测搜「粮食 霉变 检测」返回 carbazole 聚合物论文）；
+#   - OpenReview 的 /notes/search 是全文搜索，混入审稿意见，且以英文
+#     会议论文为主，中文查询命中质量差（实测返回 "Metamorphic testing
+#     as a test case selection strategy"）。
+# 用户显式指定 sources 时完全遵从，不受此规则影响；跳过的源以失败态
+# 出现在 SSE source 事件里，前端状态栏可见原因，不做静默排除。
+SKIP_FOR_CJK = ("europepmc", "openreview")
+
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _has_cjk(text: str) -> bool:
+    """查询词是否含中日韩表意文字（中文查询判定）。"""
+    return bool(_CJK_RE.search(text or ""))
 
 
 @dataclass
@@ -137,12 +155,19 @@ class Aggregator:
         limit_per_source: int = 20,
         sources: list[str] | None = None,
     ) -> SearchOutcome:
-        names, unknown = self._resolve_sources(sources)
+        names, unknown, skipped = self._resolve_sources(query, sources)
         t0 = time.perf_counter()
         outcome = SearchOutcome(query=query)
         for n in unknown:
             outcome.sources.append(
                 SourceResult(name=n, label=n, ok=False, error="未知数据源")
+            )
+        for n in skipped:
+            outcome.sources.append(
+                SourceResult(
+                    name=n, label=REGISTRY[n].label, ok=False, count=0,
+                    elapsed_ms=0, error="中文查询已跳过（相关度低）",
+                )
             )
 
         # 缓存命中：直接复用上次的全量结果（深拷贝，避免污染缓存）
@@ -189,7 +214,7 @@ class Aggregator:
         """逐个产出事件字典，由上层转成 SSE。"""
         from .enrich import OaEnricher, apply_enrichment
 
-        names, unknown = self._resolve_sources(sources)
+        names, unknown, skipped = self._resolve_sources(query, sources)
         t0 = time.perf_counter()
 
         # 缓存命中：直接把上次的最终结果当 done 事件推出（含各源统计），
@@ -240,8 +265,28 @@ class Aggregator:
                          "elapsed_ms": 0, "error": "未知数据源"},
             }
 
+        # 中文查询跳过的源：以失败态推送，前端状态栏显示原因（不静默）
+        for n in skipped:
+            yield {
+                "event": "source",
+                "data": {
+                    "name": n, "label": REGISTRY[n].label, "ok": False,
+                    "count": 0, "elapsed_ms": 0,
+                    "error": "中文查询已跳过（相关度低）",
+                },
+            }
+
         merger = IncrementalMerger()
         source_stats: list[SourceResult] = []
+
+        # 跳过的源也计入最终统计，保证 done 事件的状态栏与实际一致
+        for n in skipped:
+            source_stats.append(
+                SourceResult(
+                    name=n, label=REGISTRY[n].label, ok=False, count=0,
+                    elapsed_ms=0, error="中文查询已跳过（相关度低）",
+                )
+            )
 
         if names:
             client_timeout = max(
@@ -330,10 +375,24 @@ class Aggregator:
             }
 
     # ---------- 内部 ----------
-    def _resolve_sources(self, sources: list[str] | None):
+    def _resolve_sources(
+        self, query: str, sources: list[str] | None
+    ) -> tuple[list[str], list[str], list[str]]:
+        """解析本次检索实际要查的数据源。
+
+        返回 (known, unknown, skipped)：
+          - unknown：不在 REGISTRY 里的名字（含用户拼错），标记为失败；
+          - skipped：中文查询下按 SKIP_FOR_CJK 规则跳过的源，
+            仅在用户未显式指定 sources 时生效。
+        """
         names = sources or [n for n, c in REGISTRY.items() if c.enabled]
         unknown = [n for n in names if n not in REGISTRY]
-        return [n for n in names if n in REGISTRY], unknown
+        known = [n for n in names if n in REGISTRY]
+        skipped: list[str] = []
+        if sources is None and _has_cjk(query):
+            skipped = [n for n in known if n in SKIP_FOR_CJK]
+            known = [n for n in known if n not in SKIP_FOR_CJK]
+        return known, unknown, skipped
 
     async def _run_one(
         self,
