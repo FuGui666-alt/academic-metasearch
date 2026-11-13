@@ -7,3 +7,7 @@ venv/
 r*.json
 .DS_Store
 nul
+_srv.out
+_srv.err
+_v*.json
+_v*.sse
