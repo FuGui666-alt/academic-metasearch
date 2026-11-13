@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from ..models import EntityType, OaStatus, PaperRecord
-from .base import BaseConnector, register
+from .base import BaseConnector, metadata_email, register
 
 API = "https://api.crossref.org/works"
 
@@ -20,7 +20,7 @@ class CrossrefConnector(BaseConnector):
             "rows": min(limit, 50),
             "select": ("DOI,title,author,issued,container-title,"
                        "abstract,type,is-referenced-by-count,URL,subject"),
-            "mailto": "your-email@example.com",
+            "mailto": metadata_email(),
         }
         r = await self.client.get(API, params=params)
         r.raise_for_status()

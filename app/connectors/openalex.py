@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from ..models import EntityType, OaStatus, PaperRecord
-from .base import BaseConnector, register
+from .base import BaseConnector, metadata_email, register
 
 API = "https://api.openalex.org/works"
 
@@ -18,7 +18,7 @@ class OpenAlexConnector(BaseConnector):
         params = {
             "search": query,
             "per-page": min(limit, 50),
-            "mailto": "your-email@example.com",
+            "mailto": metadata_email(),
         }
         r = await self.client.get(API, params=params)
         r.raise_for_status()

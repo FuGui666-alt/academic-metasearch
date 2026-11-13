@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import abc
+import os
 from typing import Any, ClassVar
 
 import httpx
@@ -13,12 +14,30 @@ from ..models import PaperRecord
 
 # 共享的 httpx 客户端配置：统一 UA + 合理超时
 DEFAULT_HEADERS = {
-    "User-Agent": (
-        "AcademicMetasearch/0.1 (https://lib.example.edu.cn/; "
-        "mailto:your-email@example.com)"
-    ),
     "Accept": "application/json",
 }
+
+
+def metadata_email() -> str:
+    """OpenAlex / Crossref 等礼貌池（polite pool）要求的联系邮箱。
+
+    优先读 METADATA_EMAIL 环境变量；未配置时退回项目现有占位邮箱
+    （与 Unpaywall 增强、引文网络所用一致）。
+    待补充：运营者真实邮箱——设置 METADATA_EMAIL 环境变量后即生效，
+    无需改代码。
+    """
+    return (
+        os.environ.get("METADATA_EMAIL", "").strip()
+        or "noreply@example.com"
+    )
+
+
+def user_agent() -> str:
+    """构造 UA：mailto 部分动态取 metadata_email()，env 改动对新连接生效。"""
+    return (
+        f"AcademicMetasearch/0.1 (https://lib.example.edu.cn/; "
+        f"mailto:{metadata_email()})"
+    )
 
 
 class BaseConnector(abc.ABC):
@@ -55,7 +74,7 @@ def register(cls: type[BaseConnector]) -> type[BaseConnector]:
 
 def build_clients(timeout: float = 15.0) -> httpx.AsyncClient:
     return httpx.AsyncClient(
-        headers=DEFAULT_HEADERS,
+        headers={**DEFAULT_HEADERS, "User-Agent": user_agent()},
         timeout=httpx.Timeout(timeout, connect=8.0),
         follow_redirects=True,
         limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
