@@ -301,28 +301,39 @@ class Aggregator:
                     for n in names
                 ]
 
-                for coro in asyncio.as_completed(tasks):
-                    stat, records = await coro
-                    source_stats.append(stat)
-                    yield {"event": "source", "data": {
-                        "name": stat.name, "label": stat.label, "ok": stat.ok,
-                        "count": stat.count, "elapsed_ms": stat.elapsed_ms,
-                        "error": stat.error,
-                    }}
+                try:
+                    for coro in asyncio.as_completed(tasks):
+                        stat, records = await coro
+                        source_stats.append(stat)
+                        yield {"event": "source", "data": {
+                            "name": stat.name, "label": stat.label, "ok": stat.ok,
+                            "count": stat.count, "elapsed_ms": stat.elapsed_ms,
+                            "error": stat.error,
+                        }}
 
-                    if records:
-                        added = merger.add_batch(records)
-                        if added or True:
-                            # 每次有源回来都推一次当前快照（前端可增量替换）
-                            snapshot = merger.ranked()
-                            yield {
-                                "event": "partial",
-                                "data": {
-                                    "total": len(snapshot),
-                                    "added": added,
-                                    "results": [m.to_dict() for m in snapshot],
-                                },
-                            }
+                        if records:
+                            added = merger.add_batch(records)
+                            if added or True:
+                                # 每次有源回来都推一次当前快照（前端可增量替换）
+                                snapshot = merger.ranked()
+                                yield {
+                                    "event": "partial",
+                                    "data": {
+                                        "total": len(snapshot),
+                                        "added": added,
+                                        "results": [m.to_dict() for m in snapshot],
+                                    },
+                                }
+                finally:
+                    # 客户端断开 / 生成器被关闭时，as_completed 循环中途退出，
+                    # 未消费完的任务会继续跑完并向已关闭的连接写数据，产生
+                    # "Task exception was never retrieved" 噪音。这里统一
+                    # 取消并回收，保证 SSE 断开后不再有遗留任务。
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
 
         # 先推最终结果：OA 增强（Unpaywall 逐条查询，预算最坏 8s）不再
         # 阻塞 done 事件。此前 OpenAIRE 一个源 20s + OA 增强 8s，用户要等
