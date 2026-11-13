@@ -11,10 +11,16 @@
 """
 from __future__ import annotations
 
+import re
+
 from ..models import EntityType, OaStatus, PaperRecord
 from .base import BaseConnector, register
 
 API = "https://api2.openreview.net/notes/search"
+
+# 从可能含 HTML 的字段里提取 DOI 本体（不含 doi.org/ 前缀，
+# 交给 PaperRecord.__post_init__ 统一归一化）
+_DOI_IN_HTML = re.compile(r"doi\.org/(10\.\d{4,9}/[^\s\"'<>\\]+)")
 
 
 def _val(content: dict, key: str):
@@ -77,7 +83,12 @@ class OpenReviewConnector(BaseConnector):
             doi = None
             html = _val(c, "html") or ""
             if isinstance(html, str) and "doi.org/" in html:
-                doi = html
+                # html 字段通常是纯 DOI URL，但也可能是 <a href="..."> 片段。
+                # 只提取 doi.org/ 之后的 DOI 本体（10.xxxx/yyy），
+                # 避免畸形值进入记录、污染去重键与跳转链接。
+                m = _DOI_IN_HTML.search(html)
+                if m:
+                    doi = m.group(1)
 
             out.append(
                 PaperRecord(
