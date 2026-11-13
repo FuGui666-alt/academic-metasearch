@@ -230,16 +230,20 @@ class Aggregator:
             info = await enricher.enrich([m.record for m in snapshot])
             if info:
                 enriched = apply_enrichment(snapshot, info)
-                yield {
-                    "event": "oa",
-                    "data": {
-                        "annotated": enriched,
-                        "open_count": sum(
-                            1 for m in snapshot
-                            if m.record.extra.get("oa", {}).get("is_oa")
-                        ),
-                    },
-                }
+            # open_count 统计全量快照里 oa_status == "open" 的记录，
+            # 含各 connector 自带的开放标记（arXiv/DOAJ/OpenReview 等本就不走
+            # Unpaywall）。此前只数 Unpaywall 新标注的条数，导致前端显示
+            # "1 篇有免费全文"而结果卡片满屏"开放获取"的矛盾。
+            yield {
+                "event": "oa",
+                "data": {
+                    "annotated": enriched,
+                    "open_count": sum(
+                        1 for m in snapshot
+                        if m.record.oa_status == "open"
+                    ),
+                },
+            }
 
         final = merger.ranked()
         yield {
