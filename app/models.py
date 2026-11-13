@@ -40,6 +40,16 @@ class PaperRecord:
     rank: int = 0                                # 来源侧原始排名（1 起）
     extra: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self):
+        # DOI 统一归一化成裸 DOI（10.xxx/yyy）：
+        # OpenAlex / Crossref / Semantic Scholar 等 connector 写入的是
+        # https://doi.org/xxx 形式，而合并阶段 _fill 又会规范化成裸 DOI，
+        # 导致同一字段两种格式在同一次检索结果里并存（实测 34 条 URL 形式
+        # + 10 条裸形式）。构造时统一口径，展示层按需再拼完整 URL。
+        if self.doi:
+            from .normalize import normalize_doi
+            self.doi = normalize_doi(self.doi)
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
