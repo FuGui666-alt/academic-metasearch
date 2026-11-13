@@ -43,6 +43,10 @@ class DoajConnector(BaseConnector):
             doi = None
             fulltext = None
             landing = w.get("id")
+            # DOAJ 的 id 是站内标识（32 位十六进制），不是 URL；
+            # 直接交给前端会变成相对地址导致标题链接 404，拼成真实文章页。
+            if landing and not str(landing).startswith("http"):
+                landing = f"https://doaj.org/article/{landing}"
             for ident in (bj.get("identifier") or []):
                 if ident.get("type") == "doi":
                     doi = ident.get("id")
