@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>学术元搜索</title>
+<link rel="stylesheet" href="/static/style.css?v=20261113a">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">◈</span>
+    <span>学术元搜索</span>
+    <span class="ver">v0.1</span>
+  </div>
+  <div class="sources-bar" id="sourcesBar"></div>
+</header>
+
+<main>
+  <section class="hero" id="hero">
+    <h1>一次检索，聚合多个学术数据源</h1>
+    <p class="sub">并发查询 OpenAlex · Crossref · DataCite · arXiv · Europe PMC，去重归并后统一返回</p>
+  </section>
+
+  <form class="searchbox" id="searchForm">
+    <input id="q" name="q" type="search" placeholder="输入关键词，例如：土壤水分 遥感 / data paper / 数据集" autocomplete="off" autofocus>
+    <button type="submit" id="submitBtn">检索</button>
+  </form>
+
+  <div class="toolbar" id="toolbar" hidden>
+    <div class="status" id="status"></div>
+    <div class="filters">
+      <label>类型
+        <select id="typeFilter">
+          <option value="">全部</option>
+          <option value="paper">论文</option>
+          <option value="dataset">数据集</option>
+        </select>
+      </label>
+      <label>仅看开放获取
+        <input type="checkbox" id="oaFilter">
+      </label>
+      <label>排序
+        <select id="sortBy">
+          <option value="score">相关度</option>
+          <option value="year">年份</option>
+        </select>
+      </label>
+    </div>
+  </div>
+
+  <section class="results" id="results"></section>
+  <div class="empty" id="empty"></div>
+</main>
+
+<footer>
+  元数据来自各公开学术 API，仅索引题录与摘要。全文获取请通过 DOI 或原文链接。
+</footer>
+
+<script src="/static/app.js?v=20261113a"></script>
+</body>
+</html>
