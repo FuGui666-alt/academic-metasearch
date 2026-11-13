@@ -217,6 +217,20 @@ class Aggregator:
                     ],
                 },
             }
+            # 缓存结果已带 OA 标注，补发一个 oa 事件让状态栏显示篇数，
+            # 与未命中路径的交互保持一致。
+            if enrich_oa and results:
+                yield {
+                    "event": "oa",
+                    "data": {
+                        "annotated": 0,
+                        "open_count": sum(
+                            1 for m in results
+                            if m.record.oa_status == "open"
+                        ),
+                        "results": [m.to_dict() for m in results],
+                    },
+                }
             return
 
         for n in unknown:
@@ -265,41 +279,21 @@ class Aggregator:
                                 },
                             }
 
-        # 全部源完成后：可选做开放获取增强
-        enriched = 0
-        if enrich_oa and merger.items:
-            snapshot = merger.ranked()
-            enricher = OaEnricher()
-            info = await enricher.enrich([m.record for m in snapshot])
-            if info:
-                enriched = apply_enrichment(snapshot, info)
-            # open_count 统计全量快照里 oa_status == "open" 的记录，
-            # 含各 connector 自带的开放标记（arXiv/DOAJ/OpenReview 等本就不走
-            # Unpaywall）。此前只数 Unpaywall 新标注的条数，导致前端显示
-            # "1 篇有免费全文"而结果卡片满屏"开放获取"的矛盾。
-            yield {
-                "event": "oa",
-                "data": {
-                    "annotated": enriched,
-                    "open_count": sum(
-                        1 for m in snapshot
-                        if m.record.oa_status == "open"
-                    ),
-                },
-            }
-
+        # 先推最终结果：OA 增强（Unpaywall 逐条查询，预算最坏 8s）不再
+        # 阻塞 done 事件。此前 OpenAIRE 一个源 20s + OA 增强 8s，用户要等
+        # 26s 才看到"完成"；现在卡片立即可见，开放获取标注随后增量到达。
         final = merger.ranked()
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
         SEARCH_CACHE.set(
-            cache_key,
-            (final, list(source_stats), int((time.perf_counter() - t0) * 1000)),
+            cache_key, (final, list(source_stats), elapsed_ms)
         )
         yield {
             "event": "done",
             "data": {
                 "query": query,
                 "total": len(final),
-                "enriched": enriched,
-                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+                "enriched": 0,
+                "elapsed_ms": elapsed_ms,
                 "cached": False,
                 "results": [m.to_dict() for m in final],
                 "sources": [
@@ -309,6 +303,31 @@ class Aggregator:
                 ],
             },
         }
+
+        # OA 增强：done 之后增量推送。事件携带增强后的全量结果，
+        # 前端据此重渲染卡片（补上「开放获取」标签与全文链接）。
+        enriched = 0
+        if enrich_oa and merger.items:
+            snapshot = merger.ranked()
+            enricher = OaEnricher()
+            info = await enricher.enrich([m.record for m in snapshot])
+            if info:
+                enriched = apply_enrichment(snapshot, info)
+            # 增强后的结果覆盖缓存，使后续命中缓存的查询也带 OA 标注
+            SEARCH_CACHE.set(
+                cache_key, (snapshot, list(source_stats), elapsed_ms)
+            )
+            yield {
+                "event": "oa",
+                "data": {
+                    "annotated": enriched,
+                    "open_count": sum(
+                        1 for m in snapshot
+                        if m.record.oa_status == "open"
+                    ),
+                    "results": [m.to_dict() for m in snapshot],
+                },
+            }
 
     # ---------- 内部 ----------
     def _resolve_sources(self, sources: list[str] | None):

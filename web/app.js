@@ -133,6 +133,12 @@
         statusEl.insertAdjacentHTML("beforeend",
           ` · <span class="oa-hint">🔓 ${n} 篇有免费全文</span>`);
       }
+      // OA 增强现在发生在 done 之后（不阻塞结果展示），事件携带增强后的
+      // 全量结果：重渲染卡片，补上「开放获取」标签与全文链接。
+      if (data.results) {
+        allResults = data.results;
+        renderResults();
+      }
     } else if (event === "done") {
       allResults = data.results || [];
       liveSources = data.sources || liveSources;
