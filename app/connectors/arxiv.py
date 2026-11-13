@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from ..models import EntityType, OaStatus, PaperRecord
 from .base import BaseConnector, register
 
-API = "http://export.arxiv.org/api/query"
+API = "https://export.arxiv.org/api/query"
 
 NS = {
     "a": "http://www.w3.org/2005/Atom",
