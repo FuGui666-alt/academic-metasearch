@@ -23,6 +23,7 @@ from typing import AsyncIterator
 
 import httpx
 
+from .cache import SEARCH_CACHE, TTLCache
 from .connectors import REGISTRY, build_clients
 from .merger import _combine, _should_fuzzy_merge, rank_results, merge
 from .models import MergedRecord, PaperRecord
@@ -144,6 +145,18 @@ class Aggregator:
                 SourceResult(name=n, label=n, ok=False, error="未知数据源")
             )
 
+        # 缓存命中：直接复用上次的全量结果（深拷贝，避免污染缓存）
+        cache_key = TTLCache.make_key(
+            query, limit_per_source, ",".join(names), False
+        )
+        cached = SEARCH_CACHE.get(cache_key)
+        if cached is not None:
+            results, src_stats, elapsed_ms = cached
+            outcome.results = results
+            outcome.sources.extend(src_stats)
+            outcome.elapsed_ms = elapsed_ms
+            return outcome
+
         all_records: list[PaperRecord] = []
         if names:
             client_timeout = max(
@@ -160,6 +173,9 @@ class Aggregator:
 
         outcome.results = rank_results(merge(all_records))
         outcome.elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        SEARCH_CACHE.set(
+            cache_key, (outcome.results, list(outcome.sources), outcome.elapsed_ms)
+        )
         return outcome
 
     # ---------- 流式：先返回的先推送 ----------
@@ -175,6 +191,33 @@ class Aggregator:
 
         names, unknown = self._resolve_sources(sources)
         t0 = time.perf_counter()
+
+        # 缓存命中：直接把上次的最终结果当 done 事件推出（含各源统计），
+        # elapsed_ms 沿用原始检索耗时，保持状态栏数字有意义。
+        cache_key = TTLCache.make_key(
+            query, limit_per_source, ",".join(names), bool(enrich_oa)
+        )
+        cached = SEARCH_CACHE.get(cache_key)
+        if cached is not None:
+            results, src_stats, elapsed_ms = cached
+            yield {
+                "event": "done",
+                "data": {
+                    "query": query,
+                    "total": len(results),
+                    "enriched": 0,
+                    "elapsed_ms": elapsed_ms,
+                    "cached": True,
+                    "results": [m.to_dict() for m in results],
+                    "sources": [
+                        {"name": s.name, "label": s.label, "ok": s.ok,
+                         "count": s.count, "elapsed_ms": s.elapsed_ms,
+                         "error": s.error}
+                        for s in src_stats
+                    ],
+                },
+            }
+            return
 
         for n in unknown:
             yield {
@@ -246,6 +289,10 @@ class Aggregator:
             }
 
         final = merger.ranked()
+        SEARCH_CACHE.set(
+            cache_key,
+            (final, list(source_stats), int((time.perf_counter() - t0) * 1000)),
+        )
         yield {
             "event": "done",
             "data": {
@@ -253,6 +300,7 @@ class Aggregator:
                 "total": len(final),
                 "enriched": enriched,
                 "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+                "cached": False,
                 "results": [m.to_dict() for m in final],
                 "sources": [
                     {"name": s.name, "label": s.label, "ok": s.ok,
