@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -158,6 +159,12 @@ async def health():
     return {"status": "ok", "connectors": len(REGISTRY)}
 
 
+# DOI 白名单：仅放行形如 10.xxxx/yyy 的规范 DOI。
+# /api/oa/{doi:path} 用 :path 捕获整段路径，不带校验时任何字符串都会
+# 被拼进 Unpaywall 请求 URL，存在注入与 SSRF 面。
+DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
+
+
 @app.get("/api/oa/{doi:path}")
 async def api_oa_lookup(doi: str):
     """单独查某个 DOI 的开放获取情况（调试/详情页用）。"""
@@ -165,7 +172,7 @@ async def api_oa_lookup(doi: str):
     from .normalize import normalize_doi
 
     d = normalize_doi(doi)
-    if not d:
+    if not d or not DOI_RE.match(d):
         raise HTTPException(status_code=400, detail="DOI 格式不正确")
 
     info = await OaEnricher(budget_seconds=6.0).enrich_lookup(d)
