@@ -22,9 +22,12 @@ API = "https://api.unpaywall.org/v2"
 
 
 def _email() -> str:
+    """联系邮箱：UNPAYWALL_EMAIL 保留为历史别名，缺省统一走
+    METADATA_EMAIL（与 connectors 礼貌池同一来源，见 base.metadata_email）。"""
+    from .connectors.base import metadata_email
     return (
         os.environ.get("UNPAYWALL_EMAIL", "").strip()
-        or "noreply@example.com"
+        or metadata_email()
     )
 
 

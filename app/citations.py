@@ -19,7 +19,10 @@ import httpx
 from .normalize import normalize_doi
 
 API = "https://api.openalex.org/works"
-MAILTO = "noreply@example.com"
+# 与 connectors / Unpaywall 增强同一来源：读 METADATA_EMAIL env，
+# 未配置时回退项目占位邮箱（base.metadata_email）。
+from .connectors.base import metadata_email
+MAILTO = metadata_email()
 
 # 批量取详情时每次最多塞多少个 id
 BATCH_SIZE = 50
