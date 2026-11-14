@@ -204,7 +204,7 @@
     const el = document.createElement("article");
     el.className = "card";
 
-    const titleLink = r.landing_url || r.fulltext_url;
+    const titleLink = safeUrl(r.landing_url || r.fulltext_url);
     const h3 = document.createElement("h3");
     if (titleLink) {
       const a = document.createElement("a");
@@ -255,19 +255,25 @@
     const actions = document.createElement("div");
     actions.className = "actions";
     if (r.fulltext_url) {
-      actions.appendChild(linkBtn("全文", r.fulltext_url, "btn-link"));
+      const b = linkBtn("全文", r.fulltext_url, "btn-link");
+      if (b) actions.appendChild(b);
     }
     if (r.doi) {
-      const doi = String(r.doi).replace(/^https?:\/\/(dx\.)?doi\.org\//, "");
-      actions.appendChild(linkBtn("DOI", `https://doi.org/${doi}`, "btn-link ghost"));
+      // DOI 只保留合法字符（去空白/引号/尖括号），再经 safeUrl 放行
+      const doi = String(r.doi).replace(/^https?:\/\/(dx\.)?doi\.org\//, "")
+        .replace(/[\s"'<>]/g, "");
+      const b = linkBtn("DOI", `https://doi.org/${doi}`, "btn-link ghost");
+      if (b) actions.appendChild(b);
     }
     // 知网 / 学校入口：只生成跳转链接，不做抓取
     const links = (r.extra && r.extra.links) || {};
     if (links.cnki_title) {
-      actions.appendChild(linkBtn("知网检索", links.cnki_title, "btn-link ghost"));
+      const b = linkBtn("知网检索", links.cnki_title, "btn-link ghost");
+      if (b) actions.appendChild(b);
     }
     if (links.school) {
-      actions.appendChild(linkBtn("学校", links.school, "btn-link ghost"));
+      const b = linkBtn("学校", links.school, "btn-link ghost");
+      if (b) actions.appendChild(b);
     }
     // 引文网络：需要有 OpenAlex work id
     const workId = pickWorkId(r);
@@ -292,10 +298,19 @@
     return t;
   }
 
+  // N4 加固：外链 scheme 白名单。元数据来自外部 API，理论上可携带
+  // javascript: 等伪协议——所有 href 一律先过 safeUrl。
+  function safeUrl(u) {
+    const s = String(u == null ? "" : u).trim();
+    return /^https?:\/\//i.test(s) ? s : "";
+  }
+
   function linkBtn(text, href, cls) {
+    const url = safeUrl(href);
+    if (!url) return null;
     const a = document.createElement("a");
     a.className = cls;
-    a.href = href;
+    a.href = url;
     a.target = "_blank";
     a.rel = "noopener noreferrer";
     a.textContent = text;
@@ -305,7 +320,9 @@
   function escapeHtml(s) {
     const d = document.createElement("div");
     d.textContent = s == null ? "" : String(s);
-    return d.innerHTML;
+    // textContent→innerHTML 只转义 & < >，不转义引号；补上引号转义，
+    // 防止 escapeHtml 结果被放进 href="..." 之类的属性插值时逃逸。
+    return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
   /* ---------- 事件 ---------- */
@@ -422,7 +439,7 @@
           <div class="cite-empty">${emptyText}</div></section>`;
       }
       const items = list.map((x) => {
-        const link = x.doi || (x.id ? `https://openalex.org/${x.id}` : null);
+        const link = safeUrl(x.doi || (x.id ? `https://openalex.org/${x.id}` : ""));
         const titleHtml = link
           ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(x.title)}</a>`
           : escapeHtml(x.title);
@@ -431,9 +448,9 @@
         return `<li>
           <div class="cite-item-title">${titleHtml}</div>
           <div class="cite-item-meta">
-            ${x.year ? `<span>${x.year}</span>` : ""}
+            ${Number.isFinite(+x.year) ? `<span>${Number(x.year)}</span>` : ""}
             ${x.venue ? `<span>${escapeHtml(x.venue)}</span>` : ""}
-            ${x.cited_by != null ? `<span>被引 ${x.cited_by}</span>` : ""}
+            ${Number.isFinite(+x.cited_by) ? `<span>被引 ${Number(x.cited_by)}</span>` : ""}
             ${x.is_oa ? `<span class="oa-mini">开放</span>` : ""}
           </div>
           ${au ? `<div class="cite-item-au">${escapeHtml(au + more)}</div>` : ""}
