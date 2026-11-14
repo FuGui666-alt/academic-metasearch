@@ -33,11 +33,26 @@ def metadata_email() -> str:
 
 
 def user_agent() -> str:
-    """构造 UA：mailto 部分动态取 metadata_email()，env 改动对新连接生效。"""
-    return (
-        f"AcademicMetasearch/0.1 (https://lib.example.edu.cn/; "
-        f"mailto:{metadata_email()})"
-    )
+    """构造 UA：mailto 部分动态取 metadata_email()，env 改动对新连接生效。
+
+    站点标识默认不出现在 UA 里；自部署时可通过 METASEARCH_SITE
+    环境变量注入自己的主页地址（礼貌池惯例是「项目页 + 联系邮箱」）。
+    """
+    ua = "AcademicMetasearch/0.1"
+    site = os.environ.get("METASEARCH_SITE", "").strip()
+    if site:
+        ua += f" ({site})"
+    return f"{ua} (mailto:{metadata_email()})"
+
+
+def school_library_url() -> str:
+    """「学校」跳转按钮的目标图书馆主页。
+
+    默认关闭（返回空串，前端不渲染该按钮）。自部署时通过
+    SCHOOL_LIBRARY_URL 环境变量配置本单位图书馆地址，例如：
+        set SCHOOL_LIBRARY_URL=https://lib.example.edu.cn/
+    """
+    return os.environ.get("SCHOOL_LIBRARY_URL", "").strip()
 
 
 class BaseConnector(abc.ABC):
