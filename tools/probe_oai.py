@@ -5,7 +5,7 @@ OAI-PMH 是图书馆行业的标准协议（VuFind / paper-search-mcp 都用它�
 比爬 ASP 页面文明得多。
 
 用法：
-    python tools/probe_oai.py https://lib.example.edu.cn/
+    python tools/probe_oai.py https://某校图书馆域名/
     python tools/probe_oai.py https://某校图书馆域名 --deep
 
 探测逻辑：
