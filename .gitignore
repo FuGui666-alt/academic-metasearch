@@ -1,15 +1,34 @@
+# Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# 凭证与本地配置（.env.bat 是本项目实际使用的约定名！）
 .env
+.env.bat
+
+# 运行时产物
 *.log
-r*.json
-.DS_Store
 nul
 _srv.out
 _srv.err
-_v*.json
-_v*.sse
+_*.json
+_*.sse
+_*.out
+_*.err
+_exe.*
+
+# 打包产物
 build/
 dist/
+
+# 个人文档（如保留在磁盘但不入库）
+docs_tmp/
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
