@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import re
 import time
 from dataclasses import dataclass, field
@@ -25,7 +26,8 @@ from typing import AsyncIterator
 import httpx
 
 from .cache import SEARCH_CACHE, TTLCache
-from .connectors import REGISTRY, build_clients
+from .connectors import REGISTRY
+from .connectors.base import get_shared_client
 from .merger import _combine, _should_fuzzy_merge, rank_results, merge
 from .models import MergedRecord, PaperRecord
 
@@ -154,6 +156,8 @@ class Aggregator:
 
     def __init__(self, timeout: float = 15.0):
         self.timeout = timeout
+        # 进行中的检索任务（N2 singleflight）：同 key 并发请求共享同一个扇出
+        self._inflight: dict[str, asyncio.Task] = {}
 
     # ---------- 一次性返回（原有行为） ----------
     async def search(
@@ -163,7 +167,6 @@ class Aggregator:
         sources: list[str] | None = None,
     ) -> SearchOutcome:
         names, unknown, skipped = self._resolve_sources(query, sources)
-        t0 = time.perf_counter()
         outcome = SearchOutcome(query=query)
         for n in unknown:
             outcome.sources.append(
@@ -189,12 +192,57 @@ class Aggregator:
             outcome.elapsed_ms = elapsed_ms
             return outcome
 
-        all_records: list[PaperRecord] = []
-        if names:
-            client_timeout = max(
-                [getattr(REGISTRY[n], "timeout", self.timeout) or self.timeout for n in names]
+        # singleflight（N2）：并发相同查询共享同一个扇出任务。缓存只在
+        # 任务完成时写入，进行中的任务此前不共享——双击/多标签页会各自
+        # 全量打 10 个上游。
+        task = self._inflight.get(cache_key)
+        own = task is None
+        if own:
+            task = asyncio.create_task(
+                self._search_uncached(
+                    cache_key, query, limit_per_source, names, unknown, skipped
+                ),
+                name="search:" + cache_key,
             )
-            async with build_clients(client_timeout) as client:
+            self._inflight[cache_key] = task
+        res = await task
+        if own:
+            return res
+        # 共享等待方拿深拷贝，避免与创建方共享可变对象（增强/排序原地改）
+        return copy.deepcopy(res)
+
+    async def _search_uncached(
+        self,
+        cache_key: str,
+        query: str,
+        limit_per_source: int,
+        names: list[str],
+        unknown: list[str],
+        skipped: list[str],
+    ) -> SearchOutcome:
+        """真正的全量扇出（singleflight 的飞行任务本体）。
+
+        inflight 表项由本任务结束时自行清理：创建方中途取消不影响其他
+        等待者，任务继续跑完并写缓存。
+        """
+        try:
+            t0 = time.perf_counter()
+            outcome = SearchOutcome(query=query)
+            for n in unknown:
+                outcome.sources.append(
+                    SourceResult(name=n, label=n, ok=False, error="未知数据源")
+                )
+            for n in skipped:
+                outcome.sources.append(
+                    SourceResult(
+                        name=n, label=REGISTRY[n].label, ok=False, count=0,
+                        elapsed_ms=0, error="中文查询已跳过（相关度低）",
+                    )
+                )
+
+            all_records: list[PaperRecord] = []
+            if names:
+                client = get_shared_client()
                 tasks = [
                     self._run_one(client, REGISTRY[n], query, limit_per_source)
                     for n in names
@@ -203,12 +251,14 @@ class Aggregator:
                     outcome.sources.append(res[0])
                     all_records.extend(res[1])
 
-        outcome.results = rank_results(merge(all_records))
-        outcome.elapsed_ms = int((time.perf_counter() - t0) * 1000)
-        SEARCH_CACHE.set(
-            cache_key, (outcome.results, list(outcome.sources), outcome.elapsed_ms)
-        )
-        return outcome
+            outcome.results = rank_results(merge(all_records))
+            outcome.elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            SEARCH_CACHE.set(
+                cache_key, (outcome.results, list(outcome.sources), outcome.elapsed_ms)
+            )
+            return outcome
+        finally:
+            self._inflight.pop(cache_key, None)
 
     # ---------- 流式：先返回的先推送 ----------
     async def search_stream(
@@ -296,51 +346,48 @@ class Aggregator:
             )
 
         if names:
-            client_timeout = max(
-                [getattr(REGISTRY[n], "timeout", self.timeout) or self.timeout for n in names]
-            )
-            async with build_clients(client_timeout) as client:
-                tasks = [
-                    asyncio.create_task(
-                        self._run_one(client, REGISTRY[n], query, limit_per_source),
-                        name=n,
-                    )
-                    for n in names
-                ]
+            client = get_shared_client()
+            tasks = [
+                asyncio.create_task(
+                    self._run_one(client, REGISTRY[n], query, limit_per_source),
+                    name=n,
+                )
+                for n in names
+            ]
 
-                try:
-                    for coro in asyncio.as_completed(tasks):
-                        stat, records = await coro
-                        source_stats.append(stat)
-                        yield {"event": "source", "data": {
-                            "name": stat.name, "label": stat.label, "ok": stat.ok,
-                            "count": stat.count, "elapsed_ms": stat.elapsed_ms,
-                            "error": stat.error,
-                        }}
+            try:
+                for coro in asyncio.as_completed(tasks):
+                    stat, records = await coro
+                    source_stats.append(stat)
+                    yield {"event": "source", "data": {
+                        "name": stat.name, "label": stat.label, "ok": stat.ok,
+                        "count": stat.count, "elapsed_ms": stat.elapsed_ms,
+                        "error": stat.error,
+                    }}
 
-                        if records:
-                            added = merger.add_batch(records)
-                            if added or True:
-                                # 每次有源回来都推一次当前快照（前端可增量替换）
-                                snapshot = merger.ranked()
-                                yield {
-                                    "event": "partial",
-                                    "data": {
-                                        "total": len(snapshot),
-                                        "added": added,
-                                        "results": [m.to_dict() for m in snapshot],
-                                    },
-                                }
-                finally:
-                    # 客户端断开 / 生成器被关闭时，as_completed 循环中途退出，
-                    # 未消费完的任务会继续跑完并向已关闭的连接写数据，产生
-                    # "Task exception was never retrieved" 噪音。这里统一
-                    # 取消并回收，保证 SSE 断开后不再有遗留任务。
-                    for t in tasks:
-                        if not t.done():
-                            t.cancel()
-                    if tasks:
-                        await asyncio.gather(*tasks, return_exceptions=True)
+                    if records:
+                        added = merger.add_batch(records)
+                        if added or True:
+                            # 每次有源回来都推一次当前快照（前端可增量替换）
+                            snapshot = merger.ranked()
+                            yield {
+                                "event": "partial",
+                                "data": {
+                                    "total": len(snapshot),
+                                    "added": added,
+                                    "results": [m.to_dict() for m in snapshot],
+                                },
+                            }
+            finally:
+                # 客户端断开 / 生成器被关闭时，as_completed 循环中途退出，
+                # 未消费完的任务会继续跑完并向已关闭的连接写数据，产生
+                # "Task exception was never retrieved" 噪音。这里统一
+                # 取消并回收，保证 SSE 断开后不再有遗留任务。
+                for t in tasks:
+                    if not t.done():
+                        t.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
 
         # 先推最终结果：OA 增强（Unpaywall 逐条查询，预算最坏 8s）不再
         # 阻塞 done 事件。此前 OpenAIRE 一个源 20s + OA 增强 8s，用户要等

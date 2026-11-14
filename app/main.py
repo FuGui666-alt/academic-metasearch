@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -19,7 +20,16 @@ from .connectors import REGISTRY
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT.parent / "web"
 
-app = FastAPI(title="学术元搜索", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # 服务关闭时释放共享 httpx 连接池（N2）
+    yield
+    from .connectors.base import close_shared_client
+    await close_shared_client()
+
+
+app = FastAPI(title="学术元搜索", version="0.1.0", lifespan=lifespan)
 aggregator = Aggregator(timeout=15.0)
 
 @app.get("/", response_class=HTMLResponse)

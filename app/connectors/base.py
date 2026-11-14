@@ -79,3 +79,30 @@ def build_clients(timeout: float = 15.0) -> httpx.AsyncClient:
         follow_redirects=True,
         limits=httpx.Limits(max_connections=32, max_keepalive_connections=16),
     )
+
+
+# 应用级共享客户端（N2）：整个服务生命周期复用连接池。
+_SHARED_CLIENT: httpx.AsyncClient | None = None
+
+
+def get_shared_client() -> httpx.AsyncClient:
+    """取应用级共享 httpx 客户端，惰性创建。
+
+    此前每次检索 async with build_clients(...) 新建客户端：一次检索
+    对 10 个源各做一轮 TCP+TLS 握手，连接无法跨请求复用。共享后握手
+    只发生一次；per-source 超时仍由 aggregator._run_one 的 wait_for
+    按 connector 自身 timeout 强制，不受共享超时影响。
+    """
+    global _SHARED_CLIENT
+    if _SHARED_CLIENT is None or _SHARED_CLIENT.is_closed:
+        timeout = max((c.timeout for c in REGISTRY.values()), default=15.0)
+        _SHARED_CLIENT = build_clients(timeout)
+    return _SHARED_CLIENT
+
+
+async def close_shared_client() -> None:
+    """服务关闭时释放共享连接池（FastAPI lifespan 调用）。"""
+    global _SHARED_CLIENT
+    if _SHARED_CLIENT is not None and not _SHARED_CLIENT.is_closed:
+        await _SHARED_CLIENT.aclose()
+    _SHARED_CLIENT = None
