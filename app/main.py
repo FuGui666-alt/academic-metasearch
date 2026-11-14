@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -17,8 +18,13 @@ from fastapi.responses import (
 from .aggregator import Aggregator
 from .connectors import REGISTRY
 
-ROOT = Path(__file__).resolve().parent
-WEB = ROOT.parent / "web"
+if getattr(sys, "frozen", False):
+    # PyInstaller 便携版（onedir）：web 静态文件随包解到 _MEIPASS 下
+    ROOT = Path(getattr(sys, "_MEIPASS"))
+    WEB = ROOT / "web"
+else:
+    ROOT = Path(__file__).resolve().parent
+    WEB = ROOT.parent / "web"
 
 
 @asynccontextmanager
