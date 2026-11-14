@@ -24,7 +24,7 @@ build/
 dist/
 
 # 个人文档（如保留在磁盘但不入库）
-docs_tmp/
+*_tmp/
 
 # 编辑器与系统文件
 .idea/
