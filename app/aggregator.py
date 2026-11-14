@@ -80,22 +80,28 @@ class IncrementalMerger:
         # 全量已有结果各算一次键 + 一次模糊比对，O(n²)）。
         self._by_key: dict[str, int] = {}
 
-    def add_batch(self, records: list[PaperRecord]) -> int:
-        """并入一批新结果，返回新增的合并条目数。"""
+    def add_batch(self, records: list[PaperRecord]) -> tuple[int, int]:
+        """并入一批新结果，返回 (新增条目数, 并入已有条目的更新数)。
+
+        流式侧据此决定是否推送快照：两者皆 0（本批全部被过滤）时
+        跳过推送，省一次全量序列化。
+        """
         # 先做批内去重（复用 merge 的精确键逻辑）
         batch = merge(records)
         added = 0
+        updated = 0
 
         for incoming in batch:
             idx = self._find_match(incoming.record)
             if idx is not None:
                 self._merge_into(self._items[idx], incoming, idx)
+                updated += 1
             else:
                 self._items.append(incoming)
                 self._index(incoming.record)
                 added += 1
 
-        return added
+        return added, updated
 
     def _index(self, rec: PaperRecord) -> None:
         from .normalize import dedup_key
@@ -366,9 +372,9 @@ class Aggregator:
                     }}
 
                     if records:
-                        added = merger.add_batch(records)
-                        if added or True:
-                            # 每次有源回来都推一次当前快照（前端可增量替换）
+                        added, updated = merger.add_batch(records)
+                        if added or updated:
+                            # 有新增或已有条目被补充时推快照（前端可增量替换）
                             snapshot = merger.ranked()
                             yield {
                                 "event": "partial",
