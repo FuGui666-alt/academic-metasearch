@@ -56,7 +56,11 @@ class TTLCache:
             return None
 
     def set(self, key: str, val) -> None:
-        self._d[key] = (time.monotonic(), val)
+        # 深拷贝入缓存：调用方拿到的是活对象，之后还会原地修改
+        # （如 /api/search 的 OA 增强、rank_results 注入分数），若直接
+        # 存引用，这些修改会污染缓存里 key 声称的语义（实测：oa=true
+        # 请求的 Unpaywall 标注泄漏进 oa=false 的缓存条目）。
+        self._d[key] = (time.monotonic(), copy.deepcopy(val))
         self._d.move_to_end(key)
         while len(self._d) > self.maxsize:
             self._d.popitem(last=False)
