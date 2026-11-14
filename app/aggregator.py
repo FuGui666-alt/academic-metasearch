@@ -157,6 +157,11 @@ class IncrementalMerger:
         return rank_results(self._items)
 
 
+# 并发护栏（N9）：同时进行的全量扇出上限。多标签页/多用户并发时
+# 限制对上游 API 的瞬时压力（礼貌池 / 429 风险），多余的查询排队等待。
+_FANOUT_SEM = asyncio.Semaphore(4)
+
+
 class Aggregator:
     """元搜索聚合器。"""
 
@@ -248,14 +253,15 @@ class Aggregator:
 
             all_records: list[PaperRecord] = []
             if names:
-                client = get_shared_client()
-                tasks = [
-                    self._run_one(client, REGISTRY[n], query, limit_per_source)
-                    for n in names
-                ]
-                for res in await asyncio.gather(*tasks):
-                    outcome.sources.append(res[0])
-                    all_records.extend(res[1])
+                async with _FANOUT_SEM:
+                    client = get_shared_client()
+                    tasks = [
+                        self._run_one(client, REGISTRY[n], query, limit_per_source)
+                        for n in names
+                    ]
+                    for res in await asyncio.gather(*tasks):
+                        outcome.sources.append(res[0])
+                        all_records.extend(res[1])
 
             outcome.results = rank_results(merge(all_records))
             outcome.elapsed_ms = int((time.perf_counter() - t0) * 1000)
@@ -352,48 +358,49 @@ class Aggregator:
             )
 
         if names:
-            client = get_shared_client()
-            tasks = [
-                asyncio.create_task(
-                    self._run_one(client, REGISTRY[n], query, limit_per_source),
-                    name=n,
-                )
-                for n in names
-            ]
+            async with _FANOUT_SEM:
+                client = get_shared_client()
+                tasks = [
+                    asyncio.create_task(
+                        self._run_one(client, REGISTRY[n], query, limit_per_source),
+                        name=n,
+                    )
+                    for n in names
+                ]
 
-            try:
-                for coro in asyncio.as_completed(tasks):
-                    stat, records = await coro
-                    source_stats.append(stat)
-                    yield {"event": "source", "data": {
-                        "name": stat.name, "label": stat.label, "ok": stat.ok,
-                        "count": stat.count, "elapsed_ms": stat.elapsed_ms,
-                        "error": stat.error,
-                    }}
+                try:
+                    for coro in asyncio.as_completed(tasks):
+                        stat, records = await coro
+                        source_stats.append(stat)
+                        yield {"event": "source", "data": {
+                            "name": stat.name, "label": stat.label, "ok": stat.ok,
+                            "count": stat.count, "elapsed_ms": stat.elapsed_ms,
+                            "error": stat.error,
+                        }}
 
-                    if records:
-                        added, updated = merger.add_batch(records)
-                        if added or updated:
-                            # 有新增或已有条目被补充时推快照（前端可增量替换）
-                            snapshot = merger.ranked()
-                            yield {
-                                "event": "partial",
-                                "data": {
-                                    "total": len(snapshot),
-                                    "added": added,
-                                    "results": [m.to_dict() for m in snapshot],
-                                },
-                            }
-            finally:
-                # 客户端断开 / 生成器被关闭时，as_completed 循环中途退出，
-                # 未消费完的任务会继续跑完并向已关闭的连接写数据，产生
-                # "Task exception was never retrieved" 噪音。这里统一
-                # 取消并回收，保证 SSE 断开后不再有遗留任务。
-                for t in tasks:
-                    if not t.done():
-                        t.cancel()
-                if tasks:
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                        if records:
+                            added, updated = merger.add_batch(records)
+                            if added or updated:
+                                # 有新增或已有条目被补充时推快照（前端可增量替换）
+                                snapshot = merger.ranked()
+                                yield {
+                                    "event": "partial",
+                                    "data": {
+                                        "total": len(snapshot),
+                                        "added": added,
+                                        "results": [m.to_dict() for m in snapshot],
+                                    },
+                                }
+                finally:
+                    # 客户端断开 / 生成器被关闭时，as_completed 循环中途退出，
+                    # 未消费完的任务会继续跑完并向已关闭的连接写数据，产生
+                    # "Task exception was never retrieved" 噪音。这里统一
+                    # 取消并回收，保证 SSE 断开后不再有遗留任务。
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
 
         # 先推最终结果：OA 增强（Unpaywall 逐条查询，预算最坏 8s）不再
         # 阻塞 done 事件。此前 OpenAIRE 一个源 20s + OA 增强 8s，用户要等

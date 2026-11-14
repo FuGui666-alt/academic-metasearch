@@ -81,7 +81,7 @@ async def api_sources():
 
 @app.get("/api/search")
 async def api_search(
-    q: str = Query(..., min_length=1, description="检索词"),
+    q: str = Query(..., min_length=1, max_length=300, description="检索词"),
     limit: int = Query(20, ge=1, le=50, description="每个数据源返回条数"),
     sources: str | None = Query(None, description="逗号分隔的数据源名，省略则全部"),
     oa: bool = Query(False, description="是否用 Unpaywall 标注开放获取（会增加耗时）"),
@@ -128,7 +128,7 @@ async def api_search(
 
 @app.get("/api/search/stream")
 async def api_search_stream(
-    q: str = Query(..., min_length=1, description="检索词"),
+    q: str = Query(..., min_length=1, max_length=300, description="检索词"),
     limit: int = Query(20, ge=1, le=50, description="每个数据源返回条数"),
     sources: str | None = Query(None, description="逗号分隔的数据源名，省略则全部"),
     oa: bool = Query(True, description="是否用 Unpaywall 标注开放获取全文"),
