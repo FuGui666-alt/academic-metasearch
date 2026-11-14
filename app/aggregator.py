@@ -73,8 +73,10 @@ class IncrementalMerger:
 
     def __init__(self):
         self._items: list[MergedRecord] = []
-        # 归一化标题 → 该结果在 _items 中的位置，供模糊匹配加速
-        self._by_title: dict[str, int] = {}
+        # dedup_key → 该结果在 _items 中的下标。精确键命中 O(1)，
+        # 不再逐条重算已有结果的 dedup_key（原实现每条新记录要对
+        # 全量已有结果各算一次键 + 一次模糊比对，O(n²)）。
+        self._by_key: dict[str, int] = {}
 
     def add_batch(self, records: list[PaperRecord]) -> int:
         """并入一批新结果，返回新增的合并条目数。"""
@@ -85,7 +87,7 @@ class IncrementalMerger:
         for incoming in batch:
             idx = self._find_match(incoming.record)
             if idx is not None:
-                self._merge_into(self._items[idx], incoming)
+                self._merge_into(self._items[idx], incoming, idx)
             else:
                 self._items.append(incoming)
                 self._index(incoming.record)
@@ -94,28 +96,32 @@ class IncrementalMerger:
         return added
 
     def _index(self, rec: PaperRecord) -> None:
-        from .normalize import normalize_title
-        t = normalize_title(rec.title)
-        if t:
-            self._by_title[t] = len(self._items) - 1
+        from .normalize import dedup_key
+        k = dedup_key(rec)
+        if k:
+            self._by_key[k] = len(self._items) - 1
 
     def _find_match(self, rec: PaperRecord) -> int | None:
         """在已有结果里找可合并的条目，返回下标或 None。"""
-        from .normalize import dedup_key, normalize_title
+        from .normalize import dedup_key
 
         key = dedup_key(rec)
-        for i, item in enumerate(self._items):
-            if dedup_key(item.record) == key:
-                return i
+        if key:
+            hit = self._by_key.get(key)
+            if hit is not None:
+                return hit
 
-        # 精确键没命中 → 走模糊匹配
+        # 精确键没命中 → 走模糊匹配（长度预筛在 _should_fuzzy_merge 内）
         for i, item in enumerate(self._items):
             if _should_fuzzy_merge(item.record, rec):
                 return i
         return None
 
-    def _merge_into(self, existing: MergedRecord, incoming: MergedRecord) -> None:
+    def _merge_into(self, existing: MergedRecord, incoming: MergedRecord, idx: int) -> None:
         """把 incoming 并入 existing（保留更完整的元数据）。"""
+        from .normalize import dedup_key
+
+        old_key = dedup_key(existing.record)
         combined = _combine([existing.record, incoming.record])
         sources = list(existing.sources)
         for s in incoming.sources:
@@ -128,11 +134,12 @@ class IncrementalMerger:
         existing.sources = sources
         existing.all_ids = ids
 
-        # 更新标题索引
-        from .normalize import normalize_title
-        t = normalize_title(existing.record.title)
-        if t:
-            self._by_title[t] = self._items.index(existing)
+        # 合并可能改变 DOI/标题 → 精确键随之迁移
+        new_key = dedup_key(existing.record)
+        if new_key:
+            if new_key != old_key:
+                self._by_key.pop(old_key, None)
+            self._by_key[new_key] = idx
 
     @property
     def items(self) -> list[MergedRecord]:
