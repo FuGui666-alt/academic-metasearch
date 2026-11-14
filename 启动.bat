@@ -41,7 +41,7 @@ echo   Server ready. Opening browser...
 start "" http://127.0.0.1:8000
 echo.
 echo   NOTE: closing this window will NOT stop the server.
-echo         To stop: run "stop.bat" or: taskkill /F /IM python.exe
+echo         To stop: run "stop.bat"
 echo.
 ping -n 4 127.0.0.1 >nul
 exit /b 0
