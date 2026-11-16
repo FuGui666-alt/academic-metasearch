@@ -12,20 +12,32 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 
 import httpx
 
+from .connectors.base import get_shared_client, metadata_email
 from .normalize import normalize_doi
+
+logger = logging.getLogger(__name__)
 
 API = "https://api.openalex.org/works"
 # 与 connectors / Unpaywall 增强同一来源：读 METADATA_EMAIL env，
 # 未配置时回退项目占位邮箱（base.metadata_email）。
-from .connectors.base import metadata_email
+
 MAILTO = metadata_email()
 
 # 批量取详情时每次最多塞多少个 id
 BATCH_SIZE = 50
+_WORK_FIELDS = (
+    "id,doi,title,display_name,publication_year,cited_by_count,"
+    "authorships,primary_location,open_access,type"
+)
+
+
+def _has_title(work: dict) -> bool:
+    return bool(work.get("title") or work.get("display_name"))
 
 
 def _light(w: dict) -> dict:
@@ -53,7 +65,7 @@ def _light(w: dict) -> dict:
 
 
 class CitationClient:
-    """引文网络查询客户端。每次实例化一个，内部复用连接。"""
+    """引文网络查询客户端，复用应用级共享 HTTP 连接池。"""
 
     def __init__(self, timeout: float = 12.0):
         self.timeout = timeout
@@ -75,83 +87,80 @@ class CitationClient:
             if tail.upper().startswith("W"):
                 return tail
 
-        # arXiv ID 要最先判：它长得像 DOI 但其实不是，normalize_doi 会原样放行
+        # arXiv ID 要最先判，再转换成其对应的 DataCite DOI。
         arxiv_id = ident.removeprefix("arXiv:").removeprefix("arxiv:").strip()
         if re.fullmatch(r"\d{4}\.\d{4,5}(v\d+)?", arxiv_id):
             doi = f"10.48550/arxiv.{arxiv_id.split('v')[0]}"
         else:
             doi = normalize_doi(ident)
-            # 只接受看起来像 DOI 的（含 / 且有注册前缀），其余视为无效
-            if not doi or "/" not in doi:
+            # normalize_doi 已验证注册前缀与 DOI 语法，普通 URL 不能进入此分支。
+            if not doi:
                 return None
-        async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout, connect=5.0)) as client:
-            try:
-                data = await self._get(
-                    client, f"{API}/https://doi.org/{doi}", {"select": "id"}
-                )
-                return (data.get("id") or "").rsplit("/", 1)[-1] or None
-            except Exception:
-                return None
+        try:
+            data = await self._get(
+                get_shared_client(), f"{API}/https://doi.org/{doi}", {"select": "id"}
+            )
+            return (data.get("id") or "").rsplit("/", 1)[-1] or None
+        except (httpx.HTTPError, ValueError, TypeError):
+            return None
 
     async def citing(self, work_id: str, limit: int = 25) -> list[dict]:
         """谁引用了本文（向后追溯，找最新进展）。"""
-        async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout, connect=5.0)) as client:
-            data = await self._get(
-                client,
-                API,
-                {
-                    "filter": f"cites:{work_id}",
-                    "per-page": min(limit, 50),
-                    "sort": "cited_by_count:desc",
-                    "select": ("id,doi,title,publication_year,cited_by_count,"
-                               "authorships,primary_location,open_access,type"),
-                },
-            )
-            return [_light(w) for w in (data.get("results") or []) if w.get("title")]
+        data = await self._get(
+            get_shared_client(),
+            API,
+            {
+                "filter": f"cites:{work_id}",
+                "per-page": min(limit, 50),
+                "sort": "cited_by_count:desc",
+                "select": _WORK_FIELDS,
+            },
+        )
+        return [_light(w) for w in (data.get("results") or []) if _has_title(w)]
 
     async def referenced(self, work_id: str, limit: int = 25) -> list[dict]:
         """本文引用了谁（向前追溯，找奠基文献）。"""
-        async with httpx.AsyncClient(timeout=httpx.Timeout(self.timeout, connect=5.0)) as client:
-            # 1) 拿目标 work 的引用 id 列表
-            meta = await self._get(
+        client = get_shared_client()
+        meta = await self._get(
+            client,
+            f"{API}/{work_id}",
+            {"select": "id,title,referenced_works,referenced_works_count"},
+        )
+        ref_ids = meta.get("referenced_works") or []
+        if not ref_ids:
+            return []
+
+        ids = [r.rsplit("/", 1)[-1] for r in ref_ids][:limit]
+        batches = [ids[i:i + BATCH_SIZE] for i in range(0, len(ids), BATCH_SIZE)]
+        tasks = [
+            self._get(
                 client,
-                f"{API}/{work_id}",
-                {"select": "id,title,referenced_works,referenced_works_count"},
+                API,
+                {
+                    "filter": "openalex:" + "|".join(batch),
+                    "per-page": len(batch),
+                    "select": _WORK_FIELDS,
+                },
             )
-            ref_ids = meta.get("referenced_works") or []
-            if not ref_ids:
-                return []
+            for batch in batches
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            ids = [r.rsplit("/", 1)[-1] for r in ref_ids][: max(limit, 25)]
+        out: list[dict] = []
+        batch_errors = 0
+        for res in results:
+            if isinstance(res, Exception):
+                batch_errors += 1
+                logger.debug("OpenAlex referenced 批查询失败: %s", type(res).__name__)
+                continue
+            out.extend(_light(w) for w in (res.get("results") or []) if _has_title(w))
+        if batch_errors:
+            logger.info(
+                "OpenAlex referenced 部分批次失败: %d/%d", batch_errors, len(batches)
+            )
 
-            # 2) 分批取详情
-            batches = [ids[i:i + BATCH_SIZE] for i in range(0, len(ids), BATCH_SIZE)]
-            tasks = [
-                self._get(
-                    client,
-                    API,
-                    {
-                        "filter": "openalex:" + "|".join(b),
-                        "per-page": len(b),
-                        "select": ("id,doi,title,publication_year,cited_by_count,"
-                                   "authorships,primary_location,open_access,type"),
-                    },
-                )
-                for b in batches
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            out: list[dict] = []
-            for res in results:
-                if isinstance(res, Exception):
-                    continue
-                out.extend(
-                    _light(w) for w in (res.get("results") or []) if w.get("title")
-                )
-
-            # 按被引降序：被引多的一般是奠基性文献
-            out.sort(key=lambda x: -(x.get("cited_by") or 0))
-            return out[:limit]
+        out.sort(key=lambda x: -(x.get("cited_by") or 0))
+        return out[:limit]
 
     async def both(self, work_id: str, limit: int = 25) -> dict:
         """同时取两个方向，任一失败不影响另一个。"""

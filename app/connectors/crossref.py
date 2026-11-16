@@ -28,7 +28,11 @@ class CrossrefConnector(BaseConnector):
 
         out: list[PaperRecord] = []
         for i, w in enumerate(items, start=1):
+            if not isinstance(w, dict):
+                continue
             titles = w.get("title") or []
+            if not isinstance(titles, list):
+                titles = [titles]
             title = (titles[0] if titles else "").strip()
             if not title:
                 continue
@@ -78,6 +82,7 @@ def _strip_jats(abstract: str | None) -> str | None:
     if not abstract:
         return None
     import re
-    txt = re.sub(r"<[^>]+>", " ", abstract)
+    from html import unescape
+    txt = unescape(re.sub(r"<[^>]+>", " ", abstract))
     txt = re.sub(r"\s+", " ", txt).strip()
     return txt or None

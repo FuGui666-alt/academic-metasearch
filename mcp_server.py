@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 # 让 shim 无论从哪个 cwd 启动都能 import app 包
@@ -25,18 +26,30 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP  # noqa: E402
 
-from app.aggregator import Aggregator
+from app.aggregator import Aggregator  # noqa: E402
 
-mcp = FastMCP("academic-metasearch")
+
+@asynccontextmanager
+async def lifespan(_: FastMCP):
+    from app.connectors.base import close_shared_client, get_shared_client
+
+    get_shared_client()
+    try:
+        yield {}
+    finally:
+        await close_shared_client()
+
+
+mcp = FastMCP("academic-metasearch", lifespan=lifespan)
 
 # 与 main.py /api/oa 相同的 DOI 白名单口径
 DOI_RE = re.compile(r"^10\.\d{4,9}/\S+$")
 
 
 def _clean_srcs(sources: str | None) -> list[str] | None:
-    if not sources:
+    if sources is None:
         return None
     return [s.strip() for s in sources.split(",") if s.strip()]
 

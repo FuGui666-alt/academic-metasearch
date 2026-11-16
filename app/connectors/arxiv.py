@@ -36,7 +36,7 @@ class ArxivConnector(BaseConnector):
 
         out: list[PaperRecord] = []
         for i, e in enumerate(entries, start=1):
-            title = _txt(e.find("a:title", NS)).replace("\n", " ").strip()
+            title = _txt(e.find("a:title", NS)).strip()
             if not title:
                 continue
             title = " ".join(title.split())

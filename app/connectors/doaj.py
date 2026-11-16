@@ -26,7 +26,11 @@ class DoajConnector(BaseConnector):
 
         out: list[PaperRecord] = []
         for i, w in enumerate(items, start=1):
+            if not isinstance(w, dict):
+                continue
             bj = w.get("bibjson") or {}
+            if not isinstance(bj, dict):
+                continue
             title = (bj.get("title") or "").strip()
             if not title:
                 continue
@@ -93,6 +97,7 @@ def _abstract(s: str | None) -> str | None:
     if not s:
         return None
     import re
-    txt = re.sub(r"<[^>]+>", " ", s)
+    from html import unescape
+    txt = unescape(re.sub(r"<[^>]+>", " ", s))
     txt = re.sub(r"\s+", " ", txt).strip()
     return txt or None

@@ -26,7 +26,7 @@ class ZenodoConnector(BaseConnector):
         }
         r = await self.client.get(API, params=params)
         r.raise_for_status()
-        items = (r.json() or {}).get("hits", {}).get("hits", [])
+        items = ((r.json() or {}).get("hits") or {}).get("hits") or []
 
         out: list[PaperRecord] = []
         for i, w in enumerate(items, start=1):
@@ -52,12 +52,21 @@ class ZenodoConnector(BaseConnector):
             abstract = (md.get("description") or "")
             if abstract:
                 import re
-                abstract = re.sub(r"<[^>]+>", " ", abstract)
+                from html import unescape
+                abstract = unescape(re.sub(r"<[^>]+>", " ", abstract))
                 abstract = re.sub(r"\s+", " ", abstract).strip() or None
 
             keywords = list(md.get("keywords") or [])[:8]
 
             links = w.get("links") or {}
+            # fulltext_url 只放真实文件下载链接；详情页（html）只作 landing_url。
+            files = w.get("files") or []
+            fulltext = None
+            if isinstance(files, list) and files:
+                f0 = files[0]
+                if isinstance(f0, dict):
+                    fl = f0.get("links") or {}
+                    fulltext = fl.get("self") or fl.get("download") or None
 
             out.append(
                 PaperRecord(
@@ -73,7 +82,7 @@ class ZenodoConnector(BaseConnector):
                     type=(EntityType.DATASET if is_ds else EntityType.PAPER).value,
                     oa_status=(OaStatus.OPEN if md.get("access_right") == "open"
                                else OaStatus.UNKNOWN).value,
-                    fulltext_url=links.get("html"),
+                    fulltext_url=fulltext,
                     landing_url=(links.get("self_html") or links.get("html")),
                     score=self.normalize_score(i),
                     rank=i,

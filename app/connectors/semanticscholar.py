@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import os
 
-import httpx
-
 from ..models import EntityType, OaStatus, PaperRecord
 from .base import BaseConnector, register
 
@@ -44,7 +42,18 @@ class SemanticScholarConnector(BaseConnector):
 
         r = await self.client.get(API, params=params, headers=headers)
         if r.status_code == 429:
-            raise RateLimitedError("Semantic Scholar 限流（未配置 S2_API_KEY 时常见）")
+            # 尊重上游限流：最多重试一次，读取 Retry-After，默认 1s，上限 5s。
+            # 不做无限重试——避免把限流放大成上游压力。
+            retry_after = r.headers.get("Retry-After", "1")
+            try:
+                delay = min(float(retry_after), 5.0)
+            except ValueError:
+                delay = 1.0
+            import asyncio
+            await asyncio.sleep(delay)
+            r = await self.client.get(API, params=params, headers=headers)
+            if r.status_code == 429:
+                raise RateLimitedError("Semantic Scholar 限流（未配置 S2_API_KEY 时常见）")
         r.raise_for_status()
         items = (r.json() or {}).get("data") or []
 

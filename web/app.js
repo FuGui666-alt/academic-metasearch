@@ -29,7 +29,8 @@
         const chip = document.createElement("span");
         chip.className = "chip on";
         chip.textContent = s.label || s.name;
-        chip.title = `点击切换是否检索 ${s.name}`;
+        chip.title = `点击切换是否检索 ${s.label || s.name}`;
+        chip.dataset.source = s.name;
         chip.addEventListener("click", () => {
           if (disabledSources.has(s.name)) {
             disabledSources.delete(s.name);
@@ -68,9 +69,14 @@
 
     const params = new URLSearchParams({ q, limit: "20" });
     const enabledNames = [...document.querySelectorAll(".chip.on")]
-      .map((c) => c.title.replace("点击切换是否检索 ", "").trim())
+      .map((c) => c.dataset.source)
       .filter(Boolean);
-    if (enabledNames.length) params.set("sources", enabledNames.join(","));
+    if (enabledNames.length) {
+      params.set("sources", enabledNames.join(","));
+    } else if (disabledSources.size) {
+      // 全部关闭时显式提交空白名单，不能把空列表解释成“检索全部”。
+      params.set("sources", "__none__");
+    }
 
     const t0 = performance.now();
     let finished = false;

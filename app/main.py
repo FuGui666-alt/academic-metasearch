@@ -20,7 +20,7 @@ from .connectors import REGISTRY
 
 if getattr(sys, "frozen", False):
     # PyInstaller 便携版（onedir）：web 静态文件随包解到 _MEIPASS 下
-    ROOT = Path(getattr(sys, "_MEIPASS"))
+    ROOT = Path(sys._MEIPASS)
     WEB = ROOT / "web"
 else:
     ROOT = Path(__file__).resolve().parent
@@ -30,8 +30,10 @@ else:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # 服务关闭时释放共享 httpx 连接池（N2）
+    from .connectors.base import close_shared_client, get_shared_client
+
+    get_shared_client()
     yield
-    from .connectors.base import close_shared_client
     await close_shared_client()
 
 
@@ -96,7 +98,7 @@ async def api_search(
     if not query:
         raise HTTPException(status_code=400, detail="检索词不能为空")
 
-    src_list = [s.strip() for s in sources.split(",") if s.strip()] if sources else None
+    src_list = [s.strip() for s in sources.split(",") if s.strip()] if sources is not None else None
 
     outcome = await aggregator.search(query, limit_per_source=limit, sources=src_list)
 
@@ -144,7 +146,7 @@ async def api_search_stream(
     if not query:
         raise HTTPException(status_code=400, detail="检索词不能为空")
 
-    src_list = [s.strip() for s in sources.split(",") if s.strip()] if sources else None
+    src_list = [s.strip() for s in sources.split(",") if s.strip()] if sources is not None else None
 
     async def event_gen():
         try:

@@ -92,8 +92,12 @@ def _inv_to_text(inv: dict[str, list[int]]) -> str | None:
         return None
     pairs: list[tuple[int, str]] = []
     for word, positions in inv.items():
+        # 防御：上游异常结构（非 str 词 / 非 int 位置列表）不导致整源失败
+        if not isinstance(word, str) or not isinstance(positions, list):
+            continue
         for p in positions:
-            pairs.append((p, word))
+            if isinstance(p, int):
+                pairs.append((p, word))
     if not pairs:
         return None
     pairs.sort(key=lambda x: x[0])

@@ -36,7 +36,9 @@ def build_links(title: str, doi: str | None = None) -> dict[str, str]:
         "school": school_library_url(),
     }
     if doi:
-        d = doi.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
+        from ..normalize import normalize_doi
+
+        d = normalize_doi(doi)
         if d:
             links["doi"] = f"https://doi.org/{d}"
     return {k: v for k, v in links.items() if v}

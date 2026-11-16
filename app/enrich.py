@@ -13,10 +13,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 API = "https://api.unpaywall.org/v2"
 
@@ -40,6 +43,10 @@ class OaEnricher:
         budget_seconds: float = 8.0,
         per_request_timeout: float = 6.0,
     ):
+        if max_concurrency < 1:
+            raise ValueError("max_concurrency 必须大于等于 1")
+        if budget_seconds <= 0 or per_request_timeout <= 0:
+            raise ValueError("超时预算必须大于 0")
         self.max_concurrency = max_concurrency
         self.budget_seconds = budget_seconds
         self.per_request_timeout = per_request_timeout
@@ -88,9 +95,11 @@ class OaEnricher:
                             timeout=min(self.per_request_timeout, remaining),
                         )
                         if r.status_code != 200:
+                            logger.debug("Unpaywall %s: HTTP %d", doi, r.status_code)
                             return
                         data = r.json()
                         if data.get("is_oa") is None:
+                            logger.debug("Unpaywall %s: 无 is_oa 字段", doi)
                             return
                         best = data.get("best_oa_location") or {}
                         results[doi] = {
@@ -103,7 +112,8 @@ class OaEnricher:
                             "host_type": best.get("host_type"),
                             "in_doaj": bool(data.get("journal_is_in_doaj")),
                         }
-                    except Exception:
+                    except (httpx.HTTPError, TimeoutError, ValueError, TypeError) as e:
+                        logger.debug("Unpaywall %s 失败: %s", doi, type(e).__name__)
                         return
 
             await asyncio.gather(*[one(d) for d in targets])
@@ -119,6 +129,7 @@ class OaEnricher:
             try:
                 r = await client.get(f"{API}/{doi}", params={"email": _email()})
                 if r.status_code != 200:
+                    logger.debug("Unpaywall lookup %s: HTTP %d", doi, r.status_code)
                     return None
                 data = r.json()
                 best = data.get("best_oa_location") or {}
@@ -134,7 +145,8 @@ class OaEnricher:
                     "title": data.get("title"),
                     "publisher": data.get("publisher"),
                 }
-            except Exception:
+            except (httpx.HTTPError, ValueError, TypeError) as e:
+                logger.debug("Unpaywall lookup %s 失败: %s", doi, type(e).__name__)
                 return None
 
 
@@ -153,11 +165,14 @@ def apply_enrichment(merged_records: list, enrichment: dict[str, dict]) -> int:
         rec.extra["oa"] = info
 
         if info["is_oa"]:
-            # 有合法免费全文：标记 open，并在没有全文链接时补上
-            if rec.oa_status != "open":
-                rec.oa_status = "open"
-            if not rec.fulltext_url and info.get("pdf_url"):
-                rec.fulltext_url = info["pdf_url"]
+            # 有合法免费全文：标记 open，并在没有全文链接时补上。
+            rec.oa_status = "open"
+            if not rec.fulltext_url:
+                rec.fulltext_url = info.get("pdf_url") or info.get("landing_url")
+            if not rec.landing_url and info.get("landing_url"):
+                rec.landing_url = info["landing_url"]
+        elif info.get("oa_status") == "closed":
+            rec.oa_status = "closed"
         count += 1
 
     return count

@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 import os
-from typing import Any, ClassVar
+from typing import ClassVar
+from urllib.parse import urlparse
 
 import httpx
 
@@ -52,7 +54,9 @@ def school_library_url() -> str:
     SCHOOL_LIBRARY_URL 环境变量配置本单位图书馆地址，例如：
         set SCHOOL_LIBRARY_URL=https://lib.example.edu.cn/
     """
-    return os.environ.get("SCHOOL_LIBRARY_URL", "").strip()
+    url = os.environ.get("SCHOOL_LIBRARY_URL", "").strip()
+    parsed = urlparse(url)
+    return url if parsed.scheme in {"http", "https"} and parsed.netloc else ""
 
 
 class BaseConnector(abc.ABC):
@@ -83,6 +87,8 @@ REGISTRY: dict[str, type[BaseConnector]] = {}
 def register(cls: type[BaseConnector]) -> type[BaseConnector]:
     if not cls.name:
         raise ValueError(f"{cls.__name__} 缺少 name")
+    if cls.name in REGISTRY and REGISTRY[cls.name] is not cls:
+        raise ValueError(f"数据源名称重复: {cls.name}")
     REGISTRY[cls.name] = cls
     return cls
 
@@ -98,6 +104,7 @@ def build_clients(timeout: float = 15.0) -> httpx.AsyncClient:
 
 # 应用级共享客户端（N2）：整个服务生命周期复用连接池。
 _SHARED_CLIENT: httpx.AsyncClient | None = None
+_SHARED_CLIENT_LOCK = asyncio.Lock()
 
 
 def get_shared_client() -> httpx.AsyncClient:
@@ -116,8 +123,9 @@ def get_shared_client() -> httpx.AsyncClient:
 
 
 async def close_shared_client() -> None:
-    """服务关闭时释放共享连接池（FastAPI lifespan 调用）。"""
+    """服务关闭时释放共享连接池（FastAPI / MCP lifespan 调用）。"""
     global _SHARED_CLIENT
-    if _SHARED_CLIENT is not None and not _SHARED_CLIENT.is_closed:
-        await _SHARED_CLIENT.aclose()
-    _SHARED_CLIENT = None
+    async with _SHARED_CLIENT_LOCK:
+        if _SHARED_CLIENT is not None and not _SHARED_CLIENT.is_closed:
+            await _SHARED_CLIENT.aclose()
+        _SHARED_CLIENT = None
