@@ -29,7 +29,8 @@ import httpx
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
+    except (AttributeError, OSError):
+        # 非交互终端可能不提供可配置的 stdout，不影响探测功能。
         pass
 
 UA = "OAI-Probe/1.0 (academic metasearch; one-shot identify)"
@@ -62,7 +63,7 @@ def probe(base: str, timeout: float = 8.0) -> list[dict]:
             url = urljoin(root, path)
             try:
                 r = client.get(url, params={"verb": "Identify"})
-            except Exception as e:
+            except httpx.HTTPError as e:
                 print(f"  · {path:<16} 连接失败: {type(e).__name__}")
                 continue
 
@@ -86,7 +87,7 @@ def parse_identify(xml_text: str) -> dict:
     import re
 
     def grab(tag: str) -> str:
-        m = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", xml_text, re.S)
+        m = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", xml_text, re.DOTALL)
         return m.group(1).strip() if m else ""
 
     return {
@@ -117,7 +118,7 @@ def deep_check(endpoint: str, timeout: float = 8.0) -> None:
                     import re
                     fmts = re.findall(r"<metadataPrefix>(.*?)</metadataPrefix>", r.text)
                     print(f"    可用格式: {', '.join(fmts) if fmts else '未知'}")
-            except Exception as e:
+            except httpx.HTTPError as e:
                 print(f"  {verb:<22} 失败: {type(e).__name__}")
             time.sleep(0.3)
 
@@ -131,7 +132,7 @@ def main() -> int:
     deep = "--deep" in sys.argv
 
     print(f"探测目标: {target}")
-    print(f"说明: OAI-PMH 是图书馆标准元数据协议。国内高校多数未开放，探测失败是常态。\n")
+    print("说明: OAI-PMH 是图书馆标准元数据协议。国内高校多数未开放，探测失败是常态。\n")
     print("[阶段] 试探常见 OAI-PMH 路径：")
 
     hits = probe(target)

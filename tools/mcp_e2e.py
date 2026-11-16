@@ -1,6 +1,8 @@
 """MCP 协议层端到端验证：以 DSH 将采用的方式（stdio 子进程）连接并调用。"""
 import asyncio
+import json
 import sys
+from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -8,7 +10,7 @@ from mcp.client.stdio import stdio_client
 PARAMS = StdioServerParameters(
     command=sys.executable,
     args=["mcp_server.py"],
-    cwd="<PROJECT_ROOT>",
+    cwd=str(Path(__file__).resolve().parents[1]),
 )
 
 
@@ -26,7 +28,6 @@ async def main():
 
             res = await session.call_tool("metasearch", {"q": "soil moisture sensor", "limit": 3})
             data = res.content[0].text
-            import json
             d = json.loads(data)
             assert d["total"] > 0 and len(d["results"]) == d["total"]
             print(f"metasearch 调用 PASS: total={d['total']}, 首条={d['results'][0]['title'][:36]}")
