@@ -153,6 +153,24 @@ class YourConnector(BaseConnector):
 curl "http://127.0.0.1:8000/api/citations?id=10.2136/vzj2016.10.0105&limit=25"
 ```
 
+## 作为 MCP Server 接入 AI 助手（DSH / Claude 等）
+
+仓库自带 `mcp_server.py`（stdio MCP server），把检索/引文/OA 查询
+以工具形式暴露给支持 MCP 的 AI 客户端，进程内直连检索核心，
+无需启动 HTTP 服务：
+
+| 工具 | 说明 |
+|------|------|
+| `metasearch(q, limit, sources, oa)` | 多源并发检索 + 三级去重，`oa=true` 附 Unpaywall 标注 |
+| `citations(id, limit)` | 引文网络（谁引用了它 / 它引用了谁） |
+| `oa_lookup(doi)` | 单 DOI 开放获取查询 |
+| `list_sources()` | 数据源清单 |
+
+DSH 中注册：MCP 连接器 → stdio → command `python`，
+args 填 `mcp_server.py` 绝对路径，cwd 填项目目录。
+浏览器版（启动.bat/exe）与 MCP 版可同时使用，互不影响。
+协议层自测：`python tools/mcp_e2e.py`。
+
 ## 工具脚本
 
 ### `tools/probe_oai.py` —— OAI-PMH 端点探测
