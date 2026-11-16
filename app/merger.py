@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from difflib import SequenceMatcher
 
 from .models import MergedRecord, PaperRecord
@@ -56,7 +57,7 @@ def merge(records: list[PaperRecord]) -> list[MergedRecord]:
         buckets.setdefault(dedup_key(rec), []).append(rec)
 
     merged: list[MergedRecord] = []
-    for key, group in buckets.items():
+    for group in buckets.values():
         merged.append(_combine(group))
 
     return _fuzzy_pass(merged)
@@ -73,7 +74,8 @@ def _combine(group: list[PaperRecord]) -> MergedRecord:
     group_sorted = sorted(
         group, key=lambda r: (-_completeness(r), _priority(r.source))
     )
-    primary = group_sorted[0]
+    # 合并不得回写 connector 或调用方持有的原始记录。
+    primary = deepcopy(group_sorted[0])
 
     for other in group_sorted[1:]:
         _fill(primary, other)
@@ -143,7 +145,7 @@ def _should_fuzzy_merge(a: PaperRecord, b: PaperRecord) -> bool:
     if not ta or not tb:
         return False
     if ta == tb:
-        return True
+        return not (a.year and b.year and abs(a.year - b.year) > 1)
 
     # 长度差太大直接跳过，省算力
     if min(len(ta), len(tb)) / max(len(ta), len(tb)) < 0.8:

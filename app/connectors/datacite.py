@@ -30,9 +30,15 @@ class DataCiteConnector(BaseConnector):
 
         out: list[PaperRecord] = []
         for i, w in enumerate(items, start=1):
+            if not isinstance(w, dict):
+                continue
             attr = w.get("attributes") or {}
+            if not isinstance(attr, dict):
+                continue
             titles = attr.get("titles") or []
-            title = (titles[0].get("title") if titles else "") or ""
+            if not isinstance(titles, list):
+                titles = [titles]
+            title = (titles[0].get("title") if titles and isinstance(titles[0], dict) else "") or ""
             title = title.strip()
             if not title:
                 continue
@@ -63,7 +69,8 @@ class DataCiteConnector(BaseConnector):
             rights = (attr.get("rightsList") or [])
             oa = OaStatus.OPEN if any(
                 "open" in (r.get("rightsUri") or "").lower()
-                or "cc" in (r.get("rightsIdentifier") or "").lower()
+                or "creativecommons.org/licenses/" in (r.get("rightsUri") or "").lower()
+                or (r.get("rightsIdentifier") or "").lower().startswith(("cc-", "cc0"))
                 for r in rights
             ) else OaStatus.UNKNOWN
 

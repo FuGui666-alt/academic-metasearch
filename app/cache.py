@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import time
 from collections import OrderedDict
 
@@ -25,14 +26,14 @@ class TTLCache:
     def __init__(self, maxsize: int = 200, ttl: float = 900.0):
         self.maxsize = maxsize
         self.ttl = ttl
-        self._d: "OrderedDict[str, tuple[float, object]]" = OrderedDict()
+        self._d: OrderedDict[str, tuple[float, object]] = OrderedDict()
         self.hits = 0
         self.misses = 0
 
     @staticmethod
     def make_key(*parts) -> str:
         """把缓存键的各部分拼成稳定字符串（None 与空串可区分）。"""
-        return "|".join("" if p is None else str(p) for p in parts)
+        return json.dumps(parts, ensure_ascii=False, separators=(",", ":"))
 
     def get(self, key: str):
         """命中返回深拷贝；未命中/已过期返回 None。"""
@@ -60,7 +61,11 @@ class TTLCache:
         # （如 /api/search 的 OA 增强、rank_results 注入分数），若直接
         # 存引用，这些修改会污染缓存里 key 声称的语义（实测：oa=true
         # 请求的 Unpaywall 标注泄漏进 oa=false 的缓存条目）。
-        self._d[key] = (time.monotonic(), copy.deepcopy(val))
+        try:
+            self._d[key] = (time.monotonic(), copy.deepcopy(val))
+        except Exception:
+            # 缓存只是加速层，不可深拷贝的上游数据不能中断检索。
+            return
         self._d.move_to_end(key)
         while len(self._d) > self.maxsize:
             self._d.popitem(last=False)

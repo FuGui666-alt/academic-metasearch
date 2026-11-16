@@ -63,10 +63,17 @@ class OpenAireConnector(BaseConnector):
         r.raise_for_status()
 
         root = ET.fromstring(r.text)
-        # 只取 results 下的直接条目，避开内层同名 <result>
-        items = root.findall(".//results/result")
-        if not items:
-            items = [e for e in root.iter() if _local(e.tag) == "result"]
+        # 兼容命名空间；只取 results 容器的直接子节点，避免把内层实体 result
+        # 与外层条目混在一起、造成字段串读。
+        items = []
+        for container in root.iter():
+            if _local(container.tag) != "results":
+                continue
+            items.extend(
+                child for child in container if _local(child.tag) == "result"
+            )
+            if items:
+                break
 
         out: list[PaperRecord] = []
         seen_ids: set[str] = set()
@@ -85,8 +92,10 @@ class OpenAireConnector(BaseConnector):
                 seen_ids.add(oid)
 
             creators = []
+            seen_creators: set[str] = set()
             for c in _all(item, "creator"):
-                if c not in creators:
+                if c not in seen_creators:
+                    seen_creators.add(c)
                     creators.append(c)
 
             date = _first(item, "dateofacceptance")

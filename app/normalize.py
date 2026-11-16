@@ -13,6 +13,7 @@ _TAIL_NOISE = re.compile(
     re.IGNORECASE,
 )
 _CN_NUM = str.maketrans("０１２３４５６７８９", "0123456789")
+_DOI = re.compile(r"^10\.\d{4,9}/\S+$", re.IGNORECASE)
 
 
 def clean_text(s: str | None) -> str:
@@ -40,11 +41,12 @@ def normalize_doi(doi: str | None) -> str | None:
     d = doi.strip()
     for prefix in ("https://doi.org/", "http://doi.org/",
                    "https://dx.doi.org/", "http://dx.doi.org/",
-                   "doi:", "DOI:"):
-        if d.startswith(prefix):
+                   "doi:"):
+        if d.lower().startswith(prefix):
             d = d[len(prefix):]
+            break
     d = d.strip().lower()
-    return d or None
+    return d if _DOI.fullmatch(d) else None
 
 
 def first_author_surname(authors: list[str]) -> str:

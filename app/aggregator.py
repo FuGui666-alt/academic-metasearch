@@ -20,15 +20,15 @@ import asyncio
 import copy
 import re
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import AsyncIterator
 
 import httpx
 
 from .cache import SEARCH_CACHE, TTLCache
 from .connectors import REGISTRY
 from .connectors.base import get_shared_client
-from .merger import _combine, _should_fuzzy_merge, rank_results, merge
+from .merger import _combine, _should_fuzzy_merge, merge, rank_results
 from .models import MergedRecord, PaperRecord
 
 # 中文查询下默认跳过的数据源：
@@ -79,6 +79,8 @@ class IncrementalMerger:
         # 不再逐条重算已有结果的 dedup_key（原实现每条新记录要对
         # 全量已有结果各算一次键 + 一次模糊比对，O(n²)）。
         self._by_key: dict[str, int] = {}
+        # 年份分桶用于模糊候选预筛，避免对整批结果做 O(n²) 相似度计算。
+        self._by_year: dict[int | None, set[int]] = {}
 
     def add_batch(self, records: list[PaperRecord]) -> tuple[int, int]:
         """并入一批新结果，返回 (新增条目数, 并入已有条目的更新数)。
@@ -108,6 +110,7 @@ class IncrementalMerger:
         k = dedup_key(rec)
         if k:
             self._by_key[k] = len(self._items) - 1
+        self._by_year.setdefault(rec.year, set()).add(len(self._items) - 1)
 
     def _find_match(self, rec: PaperRecord) -> int | None:
         """在已有结果里找可合并的条目，返回下标或 None。"""
@@ -120,8 +123,17 @@ class IncrementalMerger:
                 return hit
 
         # 精确键没命中 → 走模糊匹配（长度预筛在 _should_fuzzy_merge 内）
-        for i, item in enumerate(self._items):
-            if _should_fuzzy_merge(item.record, rec):
+        if rec.year is None:
+            candidate_ids = (
+                set().union(*self._by_year.values()) if self._by_year else set()
+            )
+        else:
+            candidate_ids = self._by_year.get(rec.year, set()).copy()
+            candidate_ids.update(self._by_year.get(None, set()))
+            candidate_ids.update(self._by_year.get(rec.year - 1, set()))
+            candidate_ids.update(self._by_year.get(rec.year + 1, set()))
+        for i in candidate_ids:
+            if _should_fuzzy_merge(self._items[i].record, rec):
                 return i
         return None
 
@@ -144,10 +156,15 @@ class IncrementalMerger:
 
         # 合并可能改变 DOI/标题 → 精确键随之迁移
         new_key = dedup_key(existing.record)
+        incoming_key = dedup_key(incoming.record)
         if new_key:
             if new_key != old_key:
                 self._by_key.pop(old_key, None)
             self._by_key[new_key] = idx
+        if incoming_key:
+            # 模糊并入后，incoming 的精确键也要指向合并实体，防止后续重复。
+            self._by_key[incoming_key] = idx
+        self._by_year.setdefault(combined.record.year, set()).add(idx)
 
     @property
     def items(self) -> list[MergedRecord]:
@@ -207,8 +224,7 @@ class Aggregator:
         # 任务完成时写入，进行中的任务此前不共享——双击/多标签页会各自
         # 全量打 10 个上游。
         task = self._inflight.get(cache_key)
-        own = task is None
-        if own:
+        if task is None:
             task = asyncio.create_task(
                 self._search_uncached(
                     cache_key, query, limit_per_source, names, unknown, skipped
@@ -216,11 +232,14 @@ class Aggregator:
                 name="search:" + cache_key,
             )
             self._inflight[cache_key] = task
-        res = await task
-        if own:
-            return res
-        # 共享等待方拿深拷贝，避免与创建方共享可变对象（增强/排序原地改）
-        return copy.deepcopy(res)
+        # 某个 HTTP 等待方断开时，不能取消其他请求正在共享的检索任务。
+        res = await asyncio.shield(task)
+        # 每个等待方拿到独立对象，避免 OA 增强和排序互相污染。
+        outcome = copy.deepcopy(res)
+        # 完成回调也应有移除自己的机会，避免任务表在 asyncio.run 结束前残留。
+        if self._inflight.get(cache_key) is task and task.done():
+            self._inflight.pop(cache_key, None)
+        return outcome
 
     async def _search_uncached(
         self,
@@ -270,7 +289,9 @@ class Aggregator:
             )
             return outcome
         finally:
-            self._inflight.pop(cache_key, None)
+            # 旧任务清理时同 key 可能已有新任务，只能移除自己。
+            if self._inflight.get(cache_key) is asyncio.current_task():
+                self._inflight.pop(cache_key, None)
 
     # ---------- 流式：先返回的先推送 ----------
     async def search_stream(
@@ -294,6 +315,10 @@ class Aggregator:
         cached = SEARCH_CACHE.get(cache_key)
         if cached is not None:
             results, src_stats, elapsed_ms = cached
+            src_stats = [
+                SourceResult(name=n, label=n, ok=False, error="未知数据源")
+                for n in unknown
+            ] + src_stats
             yield {
                 "event": "done",
                 "data": {
@@ -346,7 +371,10 @@ class Aggregator:
             }
 
         merger = IncrementalMerger()
-        source_stats: list[SourceResult] = []
+        source_stats: list[SourceResult] = [
+            SourceResult(name=n, label=n, ok=False, error="未知数据源")
+            for n in unknown
+        ]
 
         # 跳过的源也计入最终统计，保证 done 事件的状态栏与实际一致
         for n in skipped:
@@ -490,7 +518,7 @@ class Aggregator:
                              count=len(records), elapsed_ms=elapsed),
                 records,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return (
                 SourceResult(name=cls.name, label=cls.label, ok=False,
                              elapsed_ms=int((time.perf_counter() - t0) * 1000),

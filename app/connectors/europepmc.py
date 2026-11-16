@@ -31,15 +31,28 @@ class EuropePmcConnector(BaseConnector):
             if not title:
                 continue
 
-            author_str = w.get("authorString") or ""
-            authors = [a.strip() for a in author_str.split(",") if a.strip()]
+            # 优先使用结构化 authorList，比按逗号拆 authorString 更可靠
+            author_list = w.get("authorList") or {}
+            if isinstance(author_list, dict):
+                raw_authors = author_list.get("author") or []
+                if isinstance(raw_authors, dict):
+                    raw_authors = [raw_authors]
+                authors = [
+                    a.get("fullName", "").strip()
+                    for a in raw_authors
+                    if isinstance(a, dict) and a.get("fullName", "").strip()
+                ]
+            else:
+                author_str = w.get("authorString") or ""
+                authors = [a.strip() for a in author_str.split(",") if a.strip()]
 
             year = w.get("pubYear")
             year = int(year) if isinstance(year, (int, str)) and str(year).isdigit() else None
 
             doi = w.get("doi")
             pmcid = w.get("pmcid")
-            is_oa = bool(w.get("isOpenAccess")) or w.get("inEPMC") == "Y"
+            # API 同时可能返回布尔值或 Y/N 字符串，bool("N") 会误判开放获取。
+            is_oa = str(w.get("isOpenAccess", "")).strip().upper() in {"TRUE", "Y", "1"}
 
             fulltext = None
             if is_oa:

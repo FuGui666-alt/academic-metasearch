@@ -1,7 +1,7 @@
 """统一数据模型：所有 connector 的输出都必须映射成 PaperRecord。"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -49,6 +49,29 @@ class PaperRecord:
         if self.doi:
             from .normalize import normalize_doi
             self.doi = normalize_doi(self.doi)
+
+        # 轻量运行时校验：上游 connector 返回异常类型时归一化为安全值，
+        # 防止排序/合并阶段 TypeError。
+        if self.year is not None and not isinstance(self.year, int):
+            try:
+                self.year = int(self.year)
+            except (ValueError, TypeError):
+                self.year = None
+        if self.citation_count is not None:
+            try:
+                self.citation_count = int(self.citation_count)
+                if self.citation_count < 0:
+                    self.citation_count = None
+            except (ValueError, TypeError):
+                self.citation_count = None
+        if not isinstance(self.score, (int, float)):
+            self.score = 0.0
+        else:
+            self.score = max(0.0, min(float(self.score), 1.0))
+        if not isinstance(self.authors, list):
+            self.authors = []
+        if not isinstance(self.keywords, list):
+            self.keywords = []
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
