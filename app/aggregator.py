@@ -171,7 +171,8 @@ class IncrementalMerger:
         return self._items
 
     def ranked(self) -> list[MergedRecord]:
-        return rank_results(self._items)
+        # rank_results 原地排序；内部顺序必须稳定，才能保持下标索引有效。
+        return rank_results(list(self._items))
 
 
 # 并发护栏（N9）：同时进行的全量扇出上限。多标签页/多用户并发时
@@ -227,7 +228,7 @@ class Aggregator:
         if task is None:
             task = asyncio.create_task(
                 self._search_uncached(
-                    cache_key, query, limit_per_source, names, unknown, skipped
+                    cache_key, query, limit_per_source, names
                 ),
                 name="search:" + cache_key,
             )
@@ -235,7 +236,10 @@ class Aggregator:
         # 某个 HTTP 等待方断开时，不能取消其他请求正在共享的检索任务。
         res = await asyncio.shield(task)
         # 每个等待方拿到独立对象，避免 OA 增强和排序互相污染。
-        outcome = copy.deepcopy(res)
+        shared = copy.deepcopy(res)
+        outcome.results = shared.results
+        outcome.sources.extend(shared.sources)
+        outcome.elapsed_ms = shared.elapsed_ms
         # 完成回调也应有移除自己的机会，避免任务表在 asyncio.run 结束前残留。
         if self._inflight.get(cache_key) is task and task.done():
             self._inflight.pop(cache_key, None)
@@ -247,8 +251,6 @@ class Aggregator:
         query: str,
         limit_per_source: int,
         names: list[str],
-        unknown: list[str],
-        skipped: list[str],
     ) -> SearchOutcome:
         """真正的全量扇出（singleflight 的飞行任务本体）。
 
@@ -257,19 +259,8 @@ class Aggregator:
         """
         try:
             t0 = time.perf_counter()
+            # 共享任务和缓存只包含实际查询源；未知/跳过源由各请求自行构造。
             outcome = SearchOutcome(query=query)
-            for n in unknown:
-                outcome.sources.append(
-                    SourceResult(name=n, label=n, ok=False, error="未知数据源")
-                )
-            for n in skipped:
-                outcome.sources.append(
-                    SourceResult(
-                        name=n, label=REGISTRY[n].label, ok=False, count=0,
-                        elapsed_ms=0, error="中文查询已跳过（相关度低）",
-                    )
-                )
-
             all_records: list[PaperRecord] = []
             if names:
                 async with _FANOUT_SEM:
@@ -318,6 +309,12 @@ class Aggregator:
             src_stats = [
                 SourceResult(name=n, label=n, ok=False, error="未知数据源")
                 for n in unknown
+            ] + [
+                SourceResult(
+                    name=n, label=REGISTRY[n].label, ok=False, count=0,
+                    elapsed_ms=0, error="中文查询已跳过（相关度低）",
+                )
+                for n in skipped
             ] + src_stats
             yield {
                 "event": "done",
@@ -385,6 +382,8 @@ class Aggregator:
                 )
             )
 
+        # 仅实际查询源可进入共享缓存；source_stats 保留本次请求的完整统计。
+        queried_stats: list[SourceResult] = []
         if names:
             async with _FANOUT_SEM:
                 client = get_shared_client()
@@ -400,6 +399,7 @@ class Aggregator:
                     for coro in asyncio.as_completed(tasks):
                         stat, records = await coro
                         source_stats.append(stat)
+                        queried_stats.append(stat)
                         yield {"event": "source", "data": {
                             "name": stat.name, "label": stat.label, "ok": stat.ok,
                             "count": stat.count, "elapsed_ms": stat.elapsed_ms,
@@ -436,7 +436,7 @@ class Aggregator:
         final = merger.ranked()
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         SEARCH_CACHE.set(
-            cache_key, (final, list(source_stats), elapsed_ms)
+            cache_key, (final, list(queried_stats), elapsed_ms)
         )
         yield {
             "event": "done",
@@ -466,7 +466,7 @@ class Aggregator:
                 enriched = apply_enrichment(snapshot, info)
             # 增强后的结果覆盖缓存，使后续命中缓存的查询也带 OA 标注
             SEARCH_CACHE.set(
-                cache_key, (snapshot, list(source_stats), elapsed_ms)
+                cache_key, (snapshot, list(queried_stats), elapsed_ms)
             )
             yield {
                 "event": "oa",
@@ -491,7 +491,11 @@ class Aggregator:
           - skipped：中文查询下按 SKIP_FOR_CJK 规则跳过的源，
             仅在用户未显式指定 sources 时生效。
         """
-        names = sources or [n for n, c in REGISTRY.items() if c.enabled]
+        # None 使用默认源；显式空名单不查询，重复名称只保留首次出现。
+        names = (
+            [n for n, c in REGISTRY.items() if c.enabled]
+            if sources is None else list(dict.fromkeys(sources))
+        )
         unknown = [n for n in names if n not in REGISTRY]
         known = [n for n in names if n in REGISTRY]
         skipped: list[str] = []

@@ -168,6 +168,9 @@ curl "http://127.0.0.1:8000/api/citations?id=10.2136/vzj2016.10.0105&limit=25"
 
 DSH 中注册：MCP 连接器 → stdio → command `python`，
 args 填 `mcp_server.py` 绝对路径，cwd 填项目目录。
+注册示例中的 `<PROJECT_ROOT>` 需在本机替换；不要将个人绝对路径提交到仓库。
+MCP 不读取 `.env.bat`，请在宿主环境中设置 `METADATA_EMAIL`（真实联系邮箱）和可选的 `S2_API_KEY`；不要把邮箱或密钥写入源码或提交记录。
+默认邮箱 `noreply@example.com` 仅为占位符，不保证上游 API 接受，尤其使用 Unpaywall 前应配置真实邮箱。
 浏览器版（启动.bat/exe）与 MCP 版可同时使用，互不影响。
 协议层自测：`python tools/mcp_e2e.py`。
 

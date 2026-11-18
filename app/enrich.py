@@ -34,6 +34,35 @@ def _email() -> str:
     )
 
 
+def _parse_oa_response(data: object) -> dict:
+    """校验上游 JSON 的公共 OA 字段；坏响应由调用方按单 DOI 降级。"""
+    if not isinstance(data, dict) or not isinstance(data.get("is_oa"), bool):
+        raise TypeError("Unpaywall 响应缺少布尔 is_oa")
+    best = data.get("best_oa_location")
+    if best is None:
+        best = {}
+    if not isinstance(best, dict):
+        raise TypeError("Unpaywall best_oa_location 必须为对象或 null")
+    if data.get("oa_status") is not None and not isinstance(data["oa_status"], str):
+        raise TypeError("Unpaywall oa_status 必须为字符串")
+    for key in ("url_for_pdf", "url_for_landing_page", "url", "license", "version", "host_type"):
+        if best.get(key) is not None and not isinstance(best[key], str):
+            raise TypeError(f"Unpaywall {key} 必须为字符串")
+    in_doaj = data.get("journal_is_in_doaj")
+    if in_doaj is not None and not isinstance(in_doaj, bool):
+        raise TypeError("Unpaywall journal_is_in_doaj 必须为布尔值")
+    return {
+        "is_oa": data["is_oa"],
+        "oa_status": data.get("oa_status") or "unknown",
+        "pdf_url": best.get("url_for_pdf"),
+        "landing_url": best.get("url_for_landing_page") or best.get("url"),
+        "license": best.get("license"),
+        "version": best.get("version"),
+        "host_type": best.get("host_type"),
+        "in_doaj": bool(in_doaj),
+    }
+
+
 class OaEnricher:
     """对一批 PaperRecord 补充开放获取信息。"""
 
@@ -97,21 +126,7 @@ class OaEnricher:
                         if r.status_code != 200:
                             logger.debug("Unpaywall %s: HTTP %d", doi, r.status_code)
                             return
-                        data = r.json()
-                        if data.get("is_oa") is None:
-                            logger.debug("Unpaywall %s: 无 is_oa 字段", doi)
-                            return
-                        best = data.get("best_oa_location") or {}
-                        results[doi] = {
-                            "is_oa": bool(data.get("is_oa")),
-                            "oa_status": data.get("oa_status") or "unknown",
-                            "pdf_url": best.get("url_for_pdf"),
-                            "landing_url": best.get("url_for_landing_page") or best.get("url"),
-                            "license": best.get("license"),
-                            "version": best.get("version"),
-                            "host_type": best.get("host_type"),
-                            "in_doaj": bool(data.get("journal_is_in_doaj")),
-                        }
+                        results[doi] = _parse_oa_response(r.json())
                     except (httpx.HTTPError, TimeoutError, ValueError, TypeError) as e:
                         logger.debug("Unpaywall %s 失败: %s", doi, type(e).__name__)
                         return
@@ -132,19 +147,10 @@ class OaEnricher:
                     logger.debug("Unpaywall lookup %s: HTTP %d", doi, r.status_code)
                     return None
                 data = r.json()
-                best = data.get("best_oa_location") or {}
-                return {
-                    "is_oa": bool(data.get("is_oa")),
-                    "oa_status": data.get("oa_status") or "unknown",
-                    "pdf_url": best.get("url_for_pdf"),
-                    "landing_url": best.get("url_for_landing_page") or best.get("url"),
-                    "license": best.get("license"),
-                    "version": best.get("version"),
-                    "host_type": best.get("host_type"),
-                    "in_doaj": bool(data.get("journal_is_in_doaj")),
-                    "title": data.get("title"),
-                    "publisher": data.get("publisher"),
-                }
+                info = _parse_oa_response(data)
+                # 保留 lookup 独有的元数据，不改变已有输出字段。
+                info.update(title=data.get("title"), publisher=data.get("publisher"))
+                return info
             except (httpx.HTTPError, ValueError, TypeError) as e:
                 logger.debug("Unpaywall lookup %s 失败: %s", doi, type(e).__name__)
                 return None

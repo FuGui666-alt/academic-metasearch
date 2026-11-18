@@ -102,6 +102,7 @@ def _fuzzy_pass(items: list[MergedRecord]) -> list[MergedRecord]:
         if used[i]:
             continue
         group = [item.record]
+        group_doi = normalize_doi(item.record.doi)
         meta_sources = list(item.sources)
         meta_ids = dict(item.all_ids)
 
@@ -109,10 +110,15 @@ def _fuzzy_pass(items: list[MergedRecord]) -> list[MergedRecord]:
             if used[j]:
                 continue
             other = items[j]
+            other_doi = normalize_doi(other.record.doi)
+            # 检查整个组已接受的 DOI，避免无 DOI 的首条记录桥接不同 DOI。
+            if group_doi and other_doi and group_doi != other_doi:
+                continue
             if not _should_fuzzy_merge(item.record, other.record):
                 continue
             used[j] = True
             group.append(other.record)
+            group_doi = group_doi or other_doi
             for s in other.sources:
                 if s not in meta_sources:
                     meta_sources.append(s)
